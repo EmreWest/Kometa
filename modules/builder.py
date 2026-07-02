@@ -10,7 +10,7 @@ from plexapi.exceptions import NotFound
 from plexapi.video import Episode, Movie, Season, Show
 from tmdbapis.tmdb import discover_movie_sort_options, discover_tv_sort_options
 
-from modules import anidb, anilist, emby, icheckmovies, imdb, letterboxd, mal, mdblist, mojo, plex, radarr, simkl, sonarr, stevenlu, tautulli, textfile, tmdb, trakt, tvdb, util
+from modules import anidb, anilist, icheckmovies, imdb, letterboxd, mal, mdblist, mojo, plex, radarr, simkl, sonarr, stevenlu, tautulli, textfile, tmdb, trakt, tvdb, util
 from modules.overlay import Overlay
 from modules.poster import KometaImage
 from modules.request import quote
@@ -25,6 +25,7 @@ advance_show = [
     "item_delete_episodes",
     "item_season_display",
 ]
+emby_builders = ["emby_all", "emby_search"]
 all_builders = (
     anidb.builders
     + anilist.builders
@@ -34,7 +35,7 @@ all_builders = (
     + mal.builders
     + mojo.builders
     + plex.builders
-    + emby.builders
+    + emby_builders
     + stevenlu.builders
     + tautulli.builders
     + textfile.builders
@@ -1592,7 +1593,7 @@ class CollectionBuilder:
                     self._mal(method_name, method_data)
                 elif method_name in mojo.builders:
                     self._mojo(method_name, method_data)
-                elif method_name in plex.builders or method_final in plex.searches:
+                elif method_name in plex.builders or method_name in emby_builders or method_final in plex.searches:
                     self._plex(method_name, method_data)
                 elif method_name in stevenlu.builders:
                     self._stevenlu(method_name, method_data)
@@ -3065,6 +3066,10 @@ class CollectionBuilder:
             self.builders.append((method_name, final))
 
     def _plex(self, method_name, method_data):
+        if method_name == "emby_all":
+            method_name = "plex_all"
+        elif method_name == "emby_search":
+            method_name = "plex_search"
         if method_name in ["plex_all", "plex_pilots"]:
             self.builders.append((method_name, self.builder_level))
         elif method_name == "plex_watchlist":
