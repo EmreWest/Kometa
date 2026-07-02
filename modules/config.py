@@ -8,6 +8,7 @@ from modules.anilist import AniList
 from modules.apprise_notify import AppriseNotify
 from modules.cache import Cache
 from modules.convert import Convert
+from modules.emby import Emby
 from modules.ergast import Ergast
 from modules.github import GitHub
 from modules.gotify import Gotify
@@ -441,8 +442,12 @@ class ConfigFile:
             self.data["github"] = self.data.pop("github")
         if "plex" in self.data:
             self.data["plex"] = self.data.pop("plex")
+        if "emby" in self.data:
+            self.data["emby"] = self.data.pop("emby")
         if "tmdb" in self.data:
             self.data["tmdb"] = self.data.pop("tmdb")
+        if "tvdb" in self.data:
+            self.data["tvdb"] = self.data.pop("tvdb")
         if "tautulli" in self.data:
             self.data["tautulli"] = self.data.pop("tautulli")
         if "omdb" in self.data:
@@ -691,6 +696,8 @@ class ConfigFile:
                 int_min=1,
                 int_max=100,
             ),
+            "overlay_refresh_emby_items": check_for_attribute(self.data, "overlay_refresh_emby_items", parent="settings", var_type="bool", default=False),
+            "server_type": check_for_attribute(self.data, "server_type", parent="settings", test_list=["plex", "emby"], default="plex"),
             "assets_for_all": check_for_attribute(
                 self.data,
                 "assets_for_all",
@@ -1039,7 +1046,7 @@ class ConfigFile:
 
             logger.separator()
 
-            logger.info("Connecting to Plex Libraries...")
+            logger.info("Connecting to Media Center Libraries...")
 
             self.general["plex"] = {
                 "url": check_for_attribute(self.data, "url", parent="plex", var_type="url", default_is_none=True),
@@ -1047,6 +1054,15 @@ class ConfigFile:
                 "timeout": check_for_attribute(self.data, "timeout", parent="plex", var_type="int", default=60),
                 "verify_ssl": check_for_attribute(self.data, "verify_ssl", parent="plex", var_type="bool", default_is_none=True),
                 "db_cache": check_for_attribute(self.data, "db_cache", parent="plex", var_type="int", default_is_none=True),
+            }
+            self.general["emby"] = {
+                "url": check_for_attribute(self.data, "url", parent="emby", var_type="url", default_is_none=True),
+                "api_key": check_for_attribute(self.data, "api_key", parent="emby", default_is_none=True),
+                "user_id": check_for_attribute(self.data, "user_id", parent="emby", default_is_none=True),
+                "overlay_destination_folder": check_for_attribute(self.data, "overlay_destination_folder", parent="emby", default_is_none=True),
+                "timeout": check_for_attribute(self.data, "timeout", parent="emby", var_type="int", default=60),
+                "verify_ssl": check_for_attribute(self.data, "verify_ssl", parent="emby", var_type="bool", default_is_none=True),
+                "db_cache": check_for_attribute(self.data, "db_cache", parent="emby", var_type="int", default_is_none=True),
             }
             for attr in ["clean_bundles", "empty_trash", "optimize"]:
                 try:
@@ -1422,6 +1438,7 @@ class ConfigFile:
                     do_print=False,
                     save=False,
                 )
+                params["overlay_refresh_emby_items"] = check_for_attribute(lib, "overlay_refresh_emby_items", parent="settings", var_type="bool", default=self.general["overlay_refresh_emby_items"], do_print=False, save=False)
                 params["changes_webhooks"] = check_for_attribute(
                     lib,
                     "changes",
@@ -1805,7 +1822,8 @@ class ConfigFile:
 
                 try:
                     logger.info("")
-                    logger.separator("Plex Configuration", space=False, border=False)
+                    server_type = str(self.general.get("server_type") or "plex").lower()
+                    logger.separator(f"{server_type.capitalize()} Configuration", space=False, border=False)
                     params["plex"] = {
                         "url": check_for_attribute(
                             lib,
@@ -1813,7 +1831,7 @@ class ConfigFile:
                             parent="plex",
                             var_type="url",
                             default=self.general["plex"]["url"],
-                            req_default=True,
+                            req_default=server_type == "plex",
                             save=False,
                         ),
                         "token": check_for_attribute(
@@ -1821,7 +1839,7 @@ class ConfigFile:
                             "token",
                             parent="plex",
                             default=self.general["plex"]["token"],
-                            req_default=True,
+                            req_default=server_type == "plex",
                             save=False,
                         ),
                         "timeout": check_for_attribute(
@@ -1851,6 +1869,15 @@ class ConfigFile:
                             save=False,
                         ),
                     }
+                    params["emby"] = {
+                        "url": check_for_attribute(lib, "url", parent="emby", var_type="url", default=self.general["emby"]["url"], req_default=server_type == "emby", save=False),
+                        "api_key": check_for_attribute(lib, "api_key", parent="emby", default=self.general["emby"]["api_key"], req_default=server_type == "emby", save=False),
+                        "user_id": check_for_attribute(lib, "user_id", parent="emby", default=self.general["emby"]["user_id"], req_default=server_type == "emby", save=False),
+                        "overlay_destination_folder": check_for_attribute(lib, "overlay_destination_folder", parent="emby", default=self.general["emby"]["overlay_destination_folder"], req_default=server_type == "emby", save=False),
+                        "timeout": check_for_attribute(lib, "timeout", parent="emby", var_type="int", default=self.general["emby"]["timeout"], save=False),
+                        "verify_ssl": check_for_attribute(lib, "verify_ssl", parent="emby", var_type="bool", default=self.general["emby"]["verify_ssl"], default_is_none=True, save=False),
+                        "db_cache": check_for_attribute(lib, "db_cache", parent="emby", var_type="int", default=self.general["emby"]["db_cache"], default_is_none=True, save=False),
+                    }
                     for attr in ["clean_bundles", "empty_trash", "optimize"]:
                         try:
                             params["plex"][attr] = check_for_attribute(lib, attr, parent="plex", var_type="bool", save=False, throw=True)
@@ -1866,11 +1893,11 @@ class ConfigFile:
                             else:
                                 params["plex"][attr] = test_attr
 
-                    if params["plex"]["url"].lower() == "env":
+                    if isinstance(params["plex"]["url"], str) and params["plex"]["url"].lower() == "env":
                         params["plex"]["url"] = self.env_plex_url
-                    if params["plex"]["token"].lower() == "env":
+                    if isinstance(params["plex"]["token"], str) and params["plex"]["token"].lower() == "env":
                         params["plex"]["token"] = self.env_plex_token
-                    library = Plex(self, params)
+                    library = Emby(self, params) if server_type == "emby" else Plex(self, params)
                     logger.info("")
                     logger.info(f"{display_name} Library Connection Successful")
                     logger.info("")
@@ -2243,7 +2270,7 @@ class ConfigFile:
             self.library_map = {_l.original_mapping_name: _l for _l in self.libraries}
 
             if len(self.libraries) > 0:
-                logger.info(f"{len(self.libraries)} Plex Library Connection{'s' if len(self.libraries) > 1 else ''} Successful")
+                logger.info(f"{len(self.libraries)} Media Center Library Connection{'s' if len(self.libraries) > 1 else ''} Successful")
             else:
                 raise Failed("Config Error: No libraries were found in config")
 

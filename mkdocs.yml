@@ -176,6 +176,7 @@ nav:
   - CONNECTIONS:
     - REQUIRED CONNECTIONS:
       - Plex: config/plex.md
+      - Emby: config/emby.md
       - TMDb: config/tmdb.md
     - OPTIONAL CONNECTIONS:
       - Tautulli: config/tautulli.md

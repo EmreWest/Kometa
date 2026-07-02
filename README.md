@@ -1,5 +1,9 @@
 # <img src="https://kometa.wiki/en/nightly/assets/images/icons/logo-full.png" alt="Kometa">
 
+## Fork Differences
+
+This fork tracks upstream Kometa and adds Emby support from `tommargar/Kometa`'s `nightly_feature_emby_overlays_3` branch. The added scope is Emby as a media server backend, Emby overlay output settings, Emby-aware config/schema/docs, and compatibility with the matching Quickstart fork that emits `settings.server_type: emby` and top-level `emby:` config.
+
 <!--shield-start-->
 <a href="https://github.com/Kometa-Team/Kometa/releases"><img src="https://img.shields.io/github/v/release/Kometa-Team/Kometa?style=plastic" alt="GitHub release (latest by date)"></a>
 <a href="https://hub.docker.com/r/kometateam/kometa"><img src="https://img.shields.io/docker/v/kometateam/kometa?label=docker&sort=semver&style=plastic" alt="Docker Image Version"></a>

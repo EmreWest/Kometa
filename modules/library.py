@@ -101,6 +101,7 @@ class Library(ABC):
         self.respect_ignore_ids = bool(params["respect_ignore_ids"])
         self.overlay_artwork_quality = params["overlay_artwork_quality"]
         self.overlay_artwork_filetype = params["overlay_artwork_filetype"]
+        self.overlay_refresh_emby_items = params.get("overlay_refresh_emby_items", False)
         self.assets_for_all = params["assets_for_all"]
         self.assets_for_all_collections = params["assets_for_all_collections"]
         self.delete_collections = params["delete_collections"]
@@ -147,6 +148,8 @@ class Library(ABC):
         }
         self.status = {}
         self.plex_bulk_edit_batch_size = params["plex_bulk_edit_batch_size"]
+        self.EmbyServer = None
+        self.mc_type = "plex"
 
         self.items_library_operation = (
             True
@@ -196,6 +199,10 @@ class Library(ABC):
         if output:
             logger.info("")
             logger.info(output)
+
+    @property
+    def is_emby(self):
+        return self.mc_type == "emby"
 
     def item_is_ignored(self, item, tmdb_id=None, tvdb_id=None, imdb_id=None):
         if not self.ignore_ids and not self.ignore_imdb_ids:
@@ -515,6 +522,9 @@ class Library(ABC):
     def item_posters(self, item, providers=None):
         pass
 
+    def get_provider_ids(self, item):
+        return None
+
     @abstractmethod
     def get_all(self, builder_level=None, load=False):
         pass
@@ -585,7 +595,7 @@ class Library(ABC):
                     item_type, check_id = self.config.Convert.scan_guid(guid)
                     id_type, main_id, imdb_id, _ = self.config.Convert.ids_from_cache(key, guid, item_type, check_id, self)
                 else:
-                    id_type, main_id, imdb_id = self.config.Convert.get_id(item, self)
+                    id_type, main_id, imdb_id = self.config.Convert.get_id(item, self, self.get_provider_ids(item))
                 if main_id:
                     if id_type == "movie":
                         if len(main_id) > 1:

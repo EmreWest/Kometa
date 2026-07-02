@@ -10,7 +10,7 @@ from plexapi.exceptions import NotFound
 from plexapi.video import Episode, Movie, Season, Show
 from tmdbapis.tmdb import discover_movie_sort_options, discover_tv_sort_options
 
-from modules import anidb, anilist, icheckmovies, imdb, letterboxd, mal, mdblist, mojo, plex, radarr, simkl, sonarr, stevenlu, tautulli, textfile, tmdb, trakt, tvdb, util
+from modules import anidb, anilist, emby, icheckmovies, imdb, letterboxd, mal, mdblist, mojo, plex, radarr, simkl, sonarr, stevenlu, tautulli, textfile, tmdb, trakt, tvdb, util
 from modules.overlay import Overlay
 from modules.poster import KometaImage
 from modules.request import quote
@@ -34,6 +34,7 @@ all_builders = (
     + mal.builders
     + mojo.builders
     + plex.builders
+    + emby.builders
     + stevenlu.builders
     + tautulli.builders
     + textfile.builders
@@ -944,7 +945,7 @@ class CollectionBuilder:
                     raise BuilderValidationError(f"{self.Type} Error: '{library_type}' is invalid. Options: true, false, {', '.join(plex.library_types)}")
                 elif library_type == "false":
                     raise NotScheduled("Skipped because run_definition is false")
-                elif library_type != "true" and self.library and library_type != self.library.Plex.type:
+                elif library_type != "true" and self.library and library_type != self.library.type.lower():
                     raise NotScheduled(f"Skipped because run_definition library_type: {library_type} doesn't match")
 
         if self.playlist:
@@ -1071,7 +1072,7 @@ class CollectionBuilder:
 
         self.asset_directory = metadata.asset_directory if metadata.asset_directory else self.library.asset_directory
 
-        self.language = self.library.Plex.language
+        self.language = getattr(getattr(self.library, "Plex", None), "language", "en")
         self.details = {
             "show_filtered": self.library.show_filtered,
             "show_unfiltered": self.library.show_unfiltered,
@@ -1134,11 +1135,12 @@ class CollectionBuilder:
         if self.playlist:
             server_check = None
             for pl_library in self.libraries:
+                server_id = getattr(getattr(pl_library, "PlexServer", None), "machineIdentifier", None) or getattr(getattr(pl_library, "EmbyServer", None), "friendlyName", None) or pl_library.url
                 if server_check:
-                    if pl_library.PlexServer.machineIdentifier != server_check:
+                    if server_id != server_check:
                         raise Failed("Playlist Error: All defined libraries must be on the same server")
                 else:
-                    server_check = pl_library.PlexServer.machineIdentifier
+                    server_check = server_id
 
         self.ignore_blank_results = False
         if "ignore_blank_results" in methods and not self.playlist:

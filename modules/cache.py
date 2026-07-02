@@ -14,6 +14,7 @@ class Cache:
     def __init__(self, config_path, expiration):
         self.cache_path = f"{os.path.splitext(config_path)[0]}.cache"
         self.expiration = expiration
+        self._false_friend_names: set[str] | None = None
         with sqlite3.connect(self.cache_path) as connection:
             connection.row_factory = sqlite3.Row
             with closing(connection.cursor()) as cursor:
@@ -330,6 +331,18 @@ class Cache:
                         people_data TEXT,
                         expiration_date TEXT,
                         UNIQUE(item_id, people_type))""")
+                cursor.execute("""CREATE TABLE IF NOT EXISTS media_people_cache (
+                    key INTEGER PRIMARY KEY,
+                    source TEXT,
+                    item_id TEXT,
+                    people_type TEXT,
+                    people_data TEXT,
+                    expiration_date TEXT,
+                    UNIQUE(source, item_id, people_type))""")
+                cursor.execute("""INSERT OR IGNORE INTO media_people_cache
+                    (source, item_id, people_type, people_data, expiration_date)
+                    SELECT 'plex', item_id, people_type, people_data, expiration_date
+                    FROM plex_people_cache""")
                 cursor.execute("SELECT count(name) FROM sqlite_master WHERE type='table' AND name='image_map'")
                 if cursor.fetchone()[0] > 0:
                     cursor.execute("SELECT DISTINCT library FROM image_map")
@@ -341,6 +354,21 @@ class Cache:
                                 final_table = table_name if row["type"] == "poster" else f"{table_name}_backgrounds"
                                 self.update_image_map(row["rating_key"], final_table, row["location"], row["compare"], overlay=row["overlay"])
                     cursor.execute("DROP TABLE IF EXISTS image_map")
+        self.add_tables_for_emby()
+
+    def add_tables_for_emby(self):
+        with sqlite3.connect(self.cache_path) as connection:
+            connection.row_factory = sqlite3.Row
+            with closing(connection.cursor()) as cursor:
+                cursor.execute("""CREATE TABLE IF NOT EXISTS tmdb_person_map (
+                    key INTEGER PRIMARY KEY,
+                    tmdb_id INTEGER UNIQUE,
+                    emby_id TEXT,
+                    name TEXT,
+                    alias TEXT,
+                    meta_json TEXT,
+                    expiration_date TEXT)""")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_tmdb_person_map_tid ON tmdb_person_map(tmdb_id)")
 
     def query_guid_map(self, plex_guid):
         id_to_return = None
@@ -1295,24 +1323,136 @@ class Cache:
                 cursor.execute("INSERT OR IGNORE INTO letterboxd_incremental_state(username, page_type) VALUES(?, ?)", (username, page_type))
                 cursor.execute("UPDATE letterboxd_incremental_state SET last_timestamp = ?, last_item_ids = ?, last_updated = ? WHERE username = ? AND page_type = ?", (last_timestamp, item_ids_json, last_updated, username, page_type))
 
-    def query_plex_people(self, item_id, people_type):
+    def query_media_people(self, item_id, people_type, source="plex"):
         people_list = None
         expired = None
         with sqlite3.connect(self.cache_path) as connection:
             connection.row_factory = sqlite3.Row
             with closing(connection.cursor()) as cursor:
-                cursor.execute("SELECT * FROM plex_people_cache WHERE item_id = ? AND people_type = ?", (item_id, people_type))
+                cursor.execute("SELECT * FROM media_people_cache WHERE source = ? AND item_id = ? AND people_type = ?", (source, str(item_id), people_type))
                 row = cursor.fetchone()
                 if row:
                     time_between_insertion = datetime.now() - datetime.strptime(row["expiration_date"], "%Y-%m-%d")
-                    people_list = json.loads(row["people_data"])
+                    try:
+                        people_list = json.loads(row["people_data"]) if row["people_data"] else []
+                    except (TypeError, ValueError):
+                        people_list = []
                     expired = time_between_insertion.days > self.expiration
         return people_list, expired
 
-    def update_plex_people(self, item_id, people_type, people_list, expired):
+    def update_media_people(self, item_id, people_type, people_list, expired, source="plex"):
         expiration_date = datetime.now() if expired is True else (datetime.now() - timedelta(days=random.randint(1, self.expiration)))
         with sqlite3.connect(self.cache_path) as connection:
             connection.row_factory = sqlite3.Row
             with closing(connection.cursor()) as cursor:
-                cursor.execute("INSERT OR IGNORE INTO plex_people_cache(item_id, people_type) VALUES(?, ?)", (item_id, people_type))
-                cursor.execute("UPDATE plex_people_cache SET people_data = ?, expiration_date = ? WHERE item_id = ? AND people_type = ?", (json.dumps(people_list), expiration_date.strftime("%Y-%m-%d"), item_id, people_type))
+                cursor.execute("INSERT OR IGNORE INTO media_people_cache(source, item_id, people_type) VALUES(?, ?, ?)", (source, str(item_id), people_type))
+                cursor.execute(
+                    "UPDATE media_people_cache SET people_data = ?, expiration_date = ? WHERE source = ? AND item_id = ? AND people_type = ?",
+                    (json.dumps(people_list), expiration_date.strftime("%Y-%m-%d"), source, str(item_id), people_type),
+                )
+                if source == "plex":
+                    cursor.execute("INSERT OR IGNORE INTO plex_people_cache(item_id, people_type) VALUES(?, ?)", (str(item_id), people_type))
+                    cursor.execute("UPDATE plex_people_cache SET people_data = ?, expiration_date = ? WHERE item_id = ? AND people_type = ?", (json.dumps(people_list), expiration_date.strftime("%Y-%m-%d"), str(item_id), people_type))
+
+    def query_plex_people(self, item_id, people_type):
+        return self.query_media_people(item_id, people_type, source="plex")
+
+    def update_plex_people(self, item_id, people_type, people_list, expired):
+        return self.update_media_people(item_id, people_type, people_list, expired, source="plex")
+
+    def query_emby_people(self, item_id, people_type):
+        return self.query_media_people(item_id, people_type, source="emby")
+
+    def update_emby_people(self, item_id, people_type, people_list, expired):
+        return self.update_media_people(item_id, people_type, people_list, expired, source="emby")
+
+    def query_tmdb_person_map_bulk(self, tmdb_ids, expiration):
+        mapping, missing_ids, expired_ids = {}, set(tmdb_ids or []), set()
+        if not tmdb_ids:
+            return mapping, missing_ids, expired_ids
+        qmarks = ",".join("?" * len(tmdb_ids))
+        with sqlite3.connect(self.cache_path) as connection:
+            connection.row_factory = sqlite3.Row
+            with closing(connection.cursor()) as cursor:
+                cursor.execute(f"SELECT * FROM tmdb_person_map WHERE tmdb_id IN ({qmarks})", tuple(tmdb_ids))
+                for row in cursor.fetchall():
+                    tid = int(row["tmdb_id"])
+                    try:
+                        meta = json.loads(row["meta_json"]) if row["meta_json"] else {}
+                    except Exception:
+                        meta = {}
+                    mapping[tid] = {"emby_id": row["emby_id"], "name": row["name"], "alias": row["alias"], "meta": meta}
+                    missing_ids.discard(tid)
+                    if row["expiration_date"]:
+                        dt = datetime.strptime(row["expiration_date"], "%Y-%m-%d")
+                        if (datetime.now() - dt).days > expiration:
+                            expired_ids.add(tid)
+        return mapping, missing_ids, expired_ids
+
+    def update_tmdb_person_map(self, expired, tmdb_id, emby_id=None, name=None, alias=None, meta_patch=None, expiration=None):
+        expiration = expiration if expiration is not None else self.expiration
+        expiration_date = datetime.now() if expired else (datetime.now() - timedelta(days=random.randint(1, expiration)))
+        with sqlite3.connect(self.cache_path) as connection:
+            connection.row_factory = sqlite3.Row
+            with closing(connection.cursor()) as cursor:
+                cursor.execute("INSERT OR IGNORE INTO tmdb_person_map(tmdb_id) VALUES(?)", (tmdb_id,))
+                cursor.execute("SELECT emby_id, name, alias, meta_json FROM tmdb_person_map WHERE tmdb_id = ?", (tmdb_id,))
+                row = cursor.fetchone()
+                cur_emby = row["emby_id"] if row else None
+                cur_name = row["name"] if row else None
+                cur_alias = row["alias"] if row else None
+                try:
+                    cur_meta = json.loads(row["meta_json"]) if (row and row["meta_json"]) else {}
+                except Exception:
+                    cur_meta = {}
+                if meta_patch:
+                    try:
+                        cur_meta.update(meta_patch)
+                    except Exception:
+                        pass
+                cursor.execute(
+                    "UPDATE tmdb_person_map SET emby_id = ?, name = ?, alias = ?, meta_json = ?, expiration_date = ? WHERE tmdb_id = ?",
+                    (
+                        emby_id if emby_id is not None else cur_emby,
+                        name if name is not None else cur_name,
+                        alias if alias is not None else cur_alias,
+                        json.dumps(cur_meta, ensure_ascii=False) if cur_meta else None,
+                        expiration_date.strftime("%Y-%m-%d"),
+                        tmdb_id,
+                    ),
+                )
+
+    def query_false_friend_names(self) -> set[str]:
+        if self._false_friend_names is not None:
+            return set(self._false_friend_names)
+        names = set()
+        with sqlite3.connect(self.cache_path) as connection:
+            connection.row_factory = sqlite3.Row
+            with closing(connection.cursor()) as cursor:
+                cursor.execute("CREATE TABLE IF NOT EXISTS false_friend_names (name TEXT PRIMARY KEY)")
+                cursor.execute("SELECT name FROM false_friend_names")
+                for row in cursor.fetchall():
+                    name = (row["name"] or "").strip()
+                    if name:
+                        names.add(name.casefold())
+        self._false_friend_names = names
+        return set(names)
+
+    def add_false_friend_name(self, name: str) -> bool:
+        normalized = (name or "").strip().casefold()
+        if not normalized:
+            return False
+        if self._false_friend_names is not None and normalized in self._false_friend_names:
+            return False
+        with sqlite3.connect(self.cache_path) as connection:
+            connection.row_factory = sqlite3.Row
+            with closing(connection.cursor()) as cursor:
+                cursor.execute("CREATE TABLE IF NOT EXISTS false_friend_names (name TEXT PRIMARY KEY)")
+                cursor.execute("INSERT OR IGNORE INTO false_friend_names(name) VALUES (?)", (normalized,))
+                inserted = bool(cursor.rowcount)
+        if inserted:
+            if self._false_friend_names is None:
+                self._false_friend_names = {normalized}
+            else:
+                self._false_friend_names.add(normalized)
+        return inserted

@@ -283,13 +283,15 @@ class Convert:
         guid = urlparse(guid_str)
         return guid.scheme.split(".")[-1], guid.netloc
 
-    def get_id(self, item, library):
+    def get_id(self, item, library, provider_ids=None):
         expired = None
         tmdb_id = []
         tvdb_id = []
         imdb_id = []
         anidb_id = None
         item_type, check_id = self.scan_guid(item.guid)
+        if provider_ids:
+            item_type = "emby"
         media_id_type, cache_id, imdb_check, expired = self.ids_from_cache(item.ratingKey, item.guid, item_type, check_id, library)
         if (cache_id or imdb_check) and expired is False:
             return media_id_type, cache_id, imdb_check
@@ -314,6 +316,26 @@ class Convert:
                 if not tvdb_id and not imdb_id and not tmdb_id:
                     library.query(item.refresh)
                     raise MappingConvertError("Mapping Error: Please refresh metadata on this item/library")
+            elif item_type == "emby":
+                db_imdb = provider_ids[0] if len(provider_ids) > 0 else None
+                db_tvdb = provider_ids[1] if len(provider_ids) > 1 else None
+                db_tmdb = provider_ids[2] if len(provider_ids) > 2 else None
+                if db_tvdb is not None:
+                    try:
+                        int(db_tvdb)
+                    except (TypeError, ValueError):
+                        db_tvdb = str(db_tvdb).split("/")[-1]
+                    try:
+                        tvdb_id.append(int(db_tvdb))
+                    except (TypeError, ValueError):
+                        logger.warning(f"Convert Warning: Invalid Emby TVDb ID '{db_tvdb}' for {getattr(item, 'title', item)}")
+                if db_imdb:
+                    imdb_id.append(db_imdb)
+                if db_tmdb:
+                    try:
+                        tmdb_id.append(int(db_tmdb))
+                    except (TypeError, ValueError):
+                        logger.warning(f"Convert Warning: Invalid Emby TMDb ID '{db_tmdb}' for {getattr(item, 'title', item)}")
             elif item_type == "imdb":
                 imdb_id.append(check_id)
             elif item_type == "thetvdb":

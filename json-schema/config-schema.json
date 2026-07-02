@@ -7,8 +7,14 @@
     "plex": {
       "$ref": "#/definitions/plex-server"
     },
+    "emby": {
+      "$ref": "#/definitions/emby-server"
+    },
     "tmdb": {
       "$ref": "#/definitions/tmdb-api"
+    },
+    "tvdb": {
+      "$ref": "#/definitions/tvdb-api"
     },
     "tautulli": {
       "$ref": "#/definitions/tautulli-api"
@@ -57,7 +63,6 @@
     }
   },
   "required": [
-    "plex",
     "tmdb"
   ],
   "definitions": {
@@ -215,6 +220,99 @@
       },
       "required": [],
       "title": "plex"
+    },
+    "emby-server": {
+      "description": "Describes the primary Emby server to which Kometa can connect. It can be overridden at the library level.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "description": "URL at which Kometa can connect to your Emby server.",
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^(https?)://"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "api_key": {
+          "description": "API key for this Emby server",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "user_id": {
+          "description": "Emby user ID Kometa should use to access libraries.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overlay_destination_folder": {
+          "description": "Folder where Kometa writes Emby overlay artwork.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout": {
+          "description": "Connection timeout in seconds for this Emby server",
+          "type": "integer",
+          "minimum": 0
+        },
+        "db_cache": {
+          "description": "Sets DB Cache value for this Emby server in MB",
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string",
+              "pattern": "^$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verify_ssl": {
+          "description": "Turn SSL Verification on or off for Emby.",
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "title": "emby"
+    },
+    "emby-server-lib": {
+      "description": "Describes the Emby server where this library is found.",
+      "$ref": "#/definitions/emby-server"
     },
     "tmdb-api": {
       "description": "API Information to connect to TMDb; REQUIRED for the script to run",
@@ -698,6 +796,49 @@
         "apikey"
       ],
       "title": "tmdb"
+    },
+    "tvdb-api": {
+      "description": "Optional API information to connect to TVDb.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "apikey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cache_expiration": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "An integer greater than 0 in days"
+        }
+      },
+      "required": [],
+      "title": "tvdb"
     },
     "tautulli-api": {
       "type": "object",
@@ -1591,6 +1732,13 @@
           "minimum": 1,
           "description": "Used to control how long data is cached for.\nSet the number of days before each cache mapping expires and has to be re-cached. An integer greater than 0 in days"
         },
+        "server_type": {
+          "description": "Selects the media server backend used for configured libraries.",
+          "enum": [
+            "plex",
+            "emby"
+          ]
+        },
         "run_order": {
           "description": "Used to specify the run order of the library components.\nSpecify the run order of the library components [Library Operations, Collection Files and Overlay Files]",
           "type": "array",
@@ -2103,6 +2251,10 @@
               "type": "null"
             }
           ]
+        },
+        "overlay_refresh_emby_items": {
+          "description": "Refresh Emby items after overlay output is written so Emby can pick up the changed artwork.",
+          "type": "boolean"
         }
       },
       "required": [],
@@ -4206,7 +4358,7 @@
       "type": "object",
       "additionalProperties": false,
       "patternProperties": {
-        "^(?!plex|tmdb|tautulli|webhooks|omdb|mdblist|notifiarr|gotify|ntfy|anidb|radarr|sonarr|trakt|mal).+$": {
+        "^(?!plex|emby|tmdb|tvdb|tautulli|webhooks|omdb|mdblist|notifiarr|gotify|ntfy|anidb|radarr|sonarr|trakt|mal).+$": {
           "additionalProperties": false,
           "properties": {
             "metadata_files": {
@@ -4246,6 +4398,9 @@
             },
             "plex": {
               "$ref": "#/definitions/plex-server-lib"
+            },
+            "emby": {
+              "$ref": "#/definitions/emby-server-lib"
             },
             "radarr": {
               "$ref": "#/definitions/radarr-api-lib"

@@ -613,6 +613,28 @@ The available setting attributes which can be set at each level are outlined bel
         ```
 
 
+??? blank "`overlay_refresh_emby_items` - Used to refresh Emby items after overlay output is written.<a class="headerlink" href="#overlay-refresh-emby-items" title="Permanent link">¶</a>"
+
+    <div id="overlay-refresh-emby-items" />Set `overlay_refresh_emby_items` to true to trigger an Emby item refresh after Kometa writes an overlay file.
+
+    <hr style="margin: 0px;">
+
+    **Attribute:** `overlay_refresh_emby_items`
+
+    **Levels with this Attribute:** Global/Library
+
+    **Accepted Values:** `true` or `false`
+
+    **Default Value:** `false`
+
+    ???+ example "Example"
+
+        ```yaml
+        settings:
+          overlay_refresh_emby_items: true
+        ```
+
+
 ??? blank "`playlist_report` - Used to print out a playlist report.<a class="headerlink" href="#playlist-report" title="Permanent link">¶</a>"
 
     <div id="playlist-report" />Set `playlist_report` to true to print out a playlist report at the end of the log.
@@ -1044,6 +1066,28 @@ The available setting attributes which can be set at each level are outlined bel
         ```yaml
         settings:
           show_unmanaged: false
+        ```
+
+
+??? blank "`server_type` - Used to select the media server backend.<a class="headerlink" href="#server-type" title="Permanent link">¶</a>"
+
+    <div id="server-type" />Set `server_type` to choose whether Kometa connects to Plex or Emby libraries.
+
+    <hr style="margin: 0px;">
+
+    **Attribute:** `server_type`
+
+    **Levels with this Attribute:** Global
+
+    **Accepted Values:** `plex` or `emby`
+
+    **Default Value:** `plex`
+
+    ???+ example "Example"
+
+        ```yaml
+        settings:
+          server_type: emby
         ```
 
 

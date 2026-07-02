@@ -671,11 +671,13 @@ def run_config(config, stats):
         if config.general["playlist_report"]:
             ran = []
             for library in config.libraries:
-                if library.PlexServer.machineIdentifier in ran:
+                server = getattr(library, "PlexServer", None) or getattr(library, "EmbyServer", None)
+                server_id = getattr(server, "machineIdentifier", None) or getattr(server, "friendlyName", None) or library.url
+                if server_id in ran:
                     continue
-                ran.append(library.PlexServer.machineIdentifier)
+                ran.append(server_id)
                 logger.info("")
-                logger.separator(f"{library.PlexServer.friendlyName} Playlist Report")
+                logger.separator(f"{getattr(server, 'friendlyName', library.name)} Playlist Report")
                 logger.info("")
                 report = library.playlist_report()
                 max_length = 0
@@ -733,6 +735,8 @@ def run_config(config, stats):
         for library in config.libraries:
             if library.url not in used_url:
                 used_url.append(library.url)
+                if getattr(library, "is_emby", False):
+                    continue
                 if library.empty_trash:
                     library.query(library.PlexServer.library.emptyTrash)
                 if library.clean_bundles:
@@ -1250,7 +1254,8 @@ def run_playlists(config):
                 builder = CollectionBuilder(config, playlist_file, mapping_name, playlist_attrs, extra=output_str)
                 stats["names"].append(builder.name)
                 logger.info("")
-                server_name = builder.libraries[0].PlexServer.friendlyName
+                server = getattr(builder.libraries[0], "PlexServer", None) or getattr(builder.libraries[0], "EmbyServer", None)
+                server_name = getattr(server, "friendlyName", None)
 
                 logger.separator(f"Running {mapping_name} Playlist", space=False, border=False)
 

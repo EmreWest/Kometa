@@ -24,6 +24,8 @@ The team at Kometa have developed a tool called [Quickstart](../kometa/scripts/q
 This table outlines the third-party services (also known as **Connectors**) that Kometa can make use of. Each service has specific 
 requirements for setup that can be found by clicking the links within the table or in the sidebar.
 
+Kometa requires one media server connector: `plex` when `settings.server_type` is `plex`, or `emby` when `settings.server_type` is `emby`.
+
 ???+ tip "Connectors"
 
     Although most connectors are not required for core Kometa functionality, some (such as Trakt and MDBList) are commonly used for third-party lists, so we would recommend configuring This connector.
@@ -32,7 +34,8 @@ requirements for setup that can be found by clicking the links within the table 
 
 | Attribute                                                                                                                                                                                                             |                  Required                  |
 |:----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:------------------------------------------:|
-| [`plex`](plex.md):material-numeric-1-circle:{ .aqua title="This connector can be configured either at the root level of the Config File, or per-library – examples are available on the connector's page." }          | :fontawesome-solid-circle-check:{ .green } |
+| [`plex`](plex.md):material-numeric-1-circle:{ .aqua title="This connector can be configured either at the root level of the Config File, or per-library - examples are available on the connector's page." }          | :fontawesome-solid-circle-check:{ .green } |
+| [`emby`](emby.md):material-numeric-1-circle:{ .aqua title="This connector can be configured either at the root level of the Config File, or per-library - examples are available on the connector's page." }          | :fontawesome-solid-circle-check:{ .green } |
 | [`tmdb`](tmdb.md)                                                                                                                                                                                                     | :fontawesome-solid-circle-check:{ .green } |
 | [`libraries`](libraries.md)                                                                                                                                                                                           | :fontawesome-solid-circle-check:{ .green } |
 | [`playlist_files`](playlists.md)                                                                                                                                                                                      |  :fontawesome-solid-circle-xmark:{ .red }  |
