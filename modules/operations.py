@@ -955,7 +955,8 @@ class Operations:
                             except Failed as e:
                                 logger.error(e)
                             tmdb_season_numbers = {s.season_number for s in real_show.seasons} if real_show else set()
-                            for season in self.library.query(item.seasons):
+                            seasons = self.library.get_seasons(item) if self.library.is_emby else self.library.query(item.seasons)
+                            for season in seasons:
                                 tmdb_season = None
                                 if tmdb_item and season.seasonNumber in tmdb_season_numbers:
                                     try:
@@ -985,7 +986,8 @@ class Operations:
                                             except NotFound:
                                                 logger.error(f"TMDb Error: An Episode of Season {season.seasonNumber} was Not Found")
 
-                                    for episode in self.library.query(season.episodes):
+                                    episodes = self.library.get_episodes(season) if self.library.is_emby else self.library.query(season.episodes)
+                                    for episode in episodes:
                                         try:
                                             episode = self.library.reload(episode)
                                         except Failed:
@@ -1017,7 +1019,8 @@ class Operations:
                     if any(["imdb" in x for x, _ in episode_ops if x]) and not imdb_id:
                         logger.info(f"No IMDb ID for Guid: {item.guid}")
 
-                    for ep in item.episodes():
+                    episodes = self.library.get_episodes(item) if self.library.is_emby else item.episodes()
+                    for ep in episodes:
                         ep = self.library.reload(ep)
                         item_title = self.library.get_item_display_title(ep)
                         logger.info("")

@@ -726,7 +726,12 @@ class Emby(Library):
     def get_episodes(self, season):
         """Retrieves episodes for a season, converting Emby objects to Plex-like objects."""
         if self.EmbyServer:
-            emby_episodes = self.EmbyServer.get_episodes(season.ratingKey)
+            emby_episodes = []
+            if isinstance(season, Show):
+                for emby_season in self.EmbyServer.get_seasons(season.ratingKey):
+                    emby_episodes.extend(self.EmbyServer.get_episodes(emby_season.get("Id")))
+            else:
+                emby_episodes = self.EmbyServer.get_episodes(season.ratingKey)
             plex_episodes = self.EmbyServer.convert_emby_to_plex(emby_episodes)
             pids_map = {str(e['Id']): e.get("ProviderIds", {}) for e in emby_episodes}
             for ep in plex_episodes:
@@ -2850,17 +2855,14 @@ class Emby(Library):
                         if normalized_key == "4k":
                             normalized_key = "4k"
                         media_by_resolutions = self.EmbyServer.media_by_resolution
-                        # if not isinstance(media_by_resolutions, dict) or normalized_key not in media_by_resolutions:
-                        #     resolutions = self.EmbyServer.get_resolutions()
-                        #     if isinstance(resolutions, dict):
-                        #         self.EmbyServer.media_by_resolution = resolutions
-                        #         media_by_resolutions = resolutions
-                        if not isinstance(media_by_resolutions, dict) or normalized_key not in media_by_resolutions:
+                        if not isinstance(media_by_resolutions, dict):
+                            self.EmbyServer.get_resolutions()
+                            media_by_resolutions = self.EmbyServer.media_by_resolution
+                        if isinstance(media_by_resolutions, dict) and normalized_key not in media_by_resolutions:
                             logger.info(
-                                "Emby resolution '%s' not found in selection",
+                                "Emby resolution '%s' has no matching items",
                                 value_decoded,
                             )
-                            continue
                         emby_query_params.setdefault("_Resolutions", set()).add(normalized_key)
                     elif key_decoded == 'hdr':
                         if value_decoded == "1":
@@ -3250,6 +3252,8 @@ class Emby(Library):
 
     def item_posters(self, item, providers=None):
         pass
+    def item_reload(self, item):
+        return self.reload(item)
     def notify(self, text, collection=None, critical=True):
         pass
     def notify_delete(self, message):

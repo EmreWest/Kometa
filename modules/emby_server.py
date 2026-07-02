@@ -601,6 +601,10 @@ class EmbyServer:
                                     found_canonical_keys.add(resolution_key)
                                 break
 
+        for resolution_key in list(resolution_patterns) + ["sd"]:
+            if resolution_key not in found_canonical_keys:
+                all_choices.append(FilterChoiceEmby(key=resolution_key, title=resolution_key))
+
         return all_choices
 
     def cache_filenames(self, imported_items):
@@ -2678,12 +2682,20 @@ class EmbyServer:
         Returns:
             None
         """
-        response = self.session.post(
-            f"{self.emby_server_url}/Items/{collection_id}?api_key={self.api_key}",
-            json={"LockData": True}
-        )
+        item = self.get_item(collection_id)
+        if item is None:
+            raise Exception(f"Failed to lock collection ID {collection_id}. Collection not found.")
+        if item.get("LockData") is True:
+            return
 
-        if response.status_code != 204:
+        response = self.update_item(collection_id, {"LockData": True})
+        if response is None:
+            item = self.get_item(collection_id)
+            if item and item.get("LockData") is True:
+                return
+            raise Exception(f"Failed to lock collection ID {collection_id}. No response from Emby.")
+
+        if response.status_code not in [200, 204]:
             raise Exception(
                 f"Failed to lock collection ID {collection_id}. "
                 f"Response: {response.status_code} - {response.text}"
