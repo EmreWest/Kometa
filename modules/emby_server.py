@@ -2062,8 +2062,8 @@ class EmbyServer:
                     runtime_ticks= int(runtime_ticks) / 10000
                 # provider_ids = item.get("ProviderIds", {})
                 media_type = item.get("Type")
-                image_tags = item.get("ImageTags", {})
-                backdrop_image_tags = item.get("BackdropImageTags", [])
+                image_tags = item.get("ImageTags") or {}
+                backdrop_image_tags = item.get("BackdropImageTags") or []
                 year = item.get("ProductionYear", None)
                 series_id = item.get("SeriesId")
                 if year:
@@ -2090,7 +2090,7 @@ class EmbyServer:
                     'guid': item_id,
                     'posterUrl': image_tags.get('Primary', ''),
                     'thumbUrl': image_tags.get('Art', ''),
-                    'type': media_type.lower(),
+                    'type': media_type.lower() if isinstance(media_type, str) else "",
                     'backdrop': ','.join(backdrop_image_tags),
                     'year': year,
                     'summary':item_overview,
@@ -2129,29 +2129,32 @@ class EmbyServer:
                     data.update(new_data)
 
             # print(media_type)
-                if media_type == "Movie":
-                    plex_object = Movie(data)
-                elif media_type == "Series":
-                    plex_object = Show(data)
-                elif media_type == "Season":
-                    plex_object= Season(data)
-                elif media_type == "Episode":
-                    plex_object=Episode(data)
-                elif media_type == "BoxSet":
-                    new_col = Collection(data)
-                    if not use_native_emby:
-                        allitems = self.get_items_in_boxset(new_col.ratingKey)
-                        new_col._items = allitems
-                        new_col.childCount= len((allitems))
+                try:
+                    if media_type == "Movie":
+                        plex_object = Movie(data)
+                    elif media_type == "Series":
+                        plex_object = Show(data)
+                    elif media_type == "Season":
+                        plex_object= Season(data)
+                    elif media_type == "Episode":
+                        plex_object=Episode(data)
+                    elif media_type == "BoxSet":
+                        new_col = Collection(data)
+                        if not use_native_emby:
+                            allitems = self.get_items_in_boxset(new_col.ratingKey)
+                            new_col._items = allitems
+                            new_col.childCount= len((allitems))
 
-                    plex_object=new_col
+                        plex_object=new_col
 
-                elif media_type == "Audio":
-                    plex_object=Audio(data)
-                elif media_type == "Person":
-                    plex_object=Person(data)
-                else:
-                    logger.error(f"error converting Emby object")
+                    elif media_type == "Audio":
+                        plex_object=Audio(data)
+                    elif media_type == "Person":
+                        plex_object=Person(data)
+                    else:
+                        raise Failed(f"Unsupported Emby object Type: {media_type!r}")
+                except Exception as exc:
+                    self._log_emby_conversion_error(item, exc)
                     continue
                 # Determine media path from Emby payload.
                 path = item.get("Path")
@@ -3755,6 +3758,32 @@ class EmbyServer:
         else:
             logger.debug("[cleanup_stuck_aliases] Keine stuck aliases gefunden.")
         return fixed
+
+    def _log_emby_conversion_error(self, item, exc):
+        if isinstance(item, dict):
+            path = item.get("Path")
+            if not path:
+                for source in item.get("MediaSources") or []:
+                    if not isinstance(source, dict):
+                        continue
+                    path = source.get("Path") or source.get("Name") or source.get("FileName")
+                    if path:
+                        break
+            logger.error(
+                "error converting Emby object: "
+                f"Id={item.get('Id')!r}, "
+                f"Name={item.get('Name')!r}, "
+                f"Type={item.get('Type')!r}, "
+                f"Path={path!r}, "
+                f"ProviderIds={item.get('ProviderIds')!r}, "
+                f"Exception={exc!r}"
+            )
+        else:
+            logger.error(
+                "error converting Emby object: "
+                f"Item={item!r}, Exception={exc!r}"
+            )
+        logger.stacktrace()
 
     # ==== build_emby_people_from_tmdb: unverändert in Logik, aber ohne unnötige Requests ====
     def build_emby_people_from_tmdb(self, my_cast, my_crew, provider: str = "tmdb"):
