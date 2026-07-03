@@ -29,6 +29,34 @@ import unicodedata
 # https://dev.emby.media/doc/restapi/Browsing-the-Library.html
 # https://docs.mdblist.com/docs/api
 
+def _populate_xml_from_dict(element, data_dict):
+    for key, value in data_dict.items():
+        if key == "_people":
+            continue
+        if value is not None:
+            element.set(key, str(value))
+
+    people_tag_map = {
+        "Actor": "Role",
+        "Director": "Director",
+        "Writer": "Writer",
+        "Producer": "Producer",
+    }
+    for person in data_dict.get("_people", []) or []:
+        person_type = person.get("Type")
+        element_name = people_tag_map.get(person_type)
+        name = person.get("Name")
+        if not element_name or not name:
+            continue
+        person_element = Element(element_name)
+        person_id = person.get("Id")
+        if person_id is not None:
+            person_element.set("id", str(person_id))
+        person_element.set("tag", str(name))
+        if person_type == "Actor" and person.get("Role"):
+            person_element.set("role", str(person.get("Role")))
+        element.append(person_element)
+
 class Movie(Movie):
     def __init__(self, data):
         xml_data = self._dict_to_xml(data)
@@ -38,9 +66,7 @@ class Movie(Movie):
     @staticmethod
     def _dict_to_xml(data_dict):
         element = Element('Video')
-        for key, value in data_dict.items():
-            if value is not None:
-                element.set(key, str(value))
+        _populate_xml_from_dict(element, data_dict)
         if 'agent' not in data_dict or not data_dict['agent']:
             element.set('agent', 'com.plexapp.agents.imdb')  # Oder den entsprechenden Agenten
 
@@ -63,9 +89,7 @@ class Show(Show):
     @staticmethod
     def _dict_to_xml(data_dict):
         element = Element('Directory')
-        for key, value in data_dict.items():
-            if value is not None:
-                element.set(key, str(value))
+        _populate_xml_from_dict(element, data_dict)
         if 'agent' not in data_dict or not data_dict['agent']:
             element.set('agent', 'com.plexapp.agents.thetvdb')  # Oder den entsprechenden Agenten
 
@@ -93,9 +117,7 @@ class Season(Season):
     @staticmethod
     def _dict_to_xml(data_dict):
         element = Element('Directory')
-        for key, value in data_dict.items():
-            if value is not None:
-                element.set(key, str(value))
+        _populate_xml_from_dict(element, data_dict)
         if 'agent' not in data_dict or not data_dict['agent']:
             element.set('agent', 'com.plexapp.agents.thetvdb')
         return element
@@ -122,9 +144,7 @@ class Episode(Episode):
     @staticmethod
     def _dict_to_xml(data_dict):
         element = Element('Video')
-        for key, value in data_dict.items():
-            if value is not None:
-                element.set(key, str(value))
+        _populate_xml_from_dict(element, data_dict)
         return element
 
 
@@ -506,7 +526,11 @@ class EmbyServer:
         """
         Fetches years for all items in the database and caches the results.
         """
-        if not self.file_names:
+        has_cached_media = any(
+            isinstance(item, dict) and item.get("MediaStreams")
+            for item in self._items_cache.values()
+        )
+        if not self.file_names and not has_cached_media:
             if getattr(self, "_file_names_fetch_attempted", False):
                 return []
 
@@ -524,8 +548,12 @@ class EmbyServer:
 
             if items:
                 self.cache_filenames(items)
+                has_cached_media = any(
+                    isinstance(item, dict) and item.get("MediaStreams")
+                    for item in self._items_cache.values()
+                )
 
-            if not self.file_names:
+            if not self.file_names and not has_cached_media:
                 return []
 
         resolution_patterns = {
@@ -563,7 +591,6 @@ class EmbyServer:
 
         # Use cached items to determine resolution from MediaStreams if available
         for item_id, item_data in self._items_cache.items():
-            res_found = False
             # Try to find resolution in MediaStreams (More accurate)
             media_streams = item_data.get("MediaStreams", [])
             for stream in media_streams:
@@ -583,11 +610,11 @@ class EmbyServer:
                             if res not in found_canonical_keys:
                                 all_choices.append(FilterChoiceEmby(key=res, title=res))
                                 found_canonical_keys.add(res)
-                            res_found = True
                     break # Only check first video stream
             
-            # Fallback to filename regex if no MediaStream info
-            if not res_found and item_id in self.file_names:
+            # Filename regex can add HDR/DV buckets even when MediaStreams already
+            # supplied the base resolution.
+            if item_id in self.file_names:
                 file_name = self.file_names[item_id]
                 if file_name:
                     for resolution_key, patterns in resolution_patterns.items():
@@ -612,14 +639,18 @@ class EmbyServer:
             return
 
         for item in imported_items:
-            # item_media_sources = item.get('MediaSources')
-            # item_media_path = item.get('Path')
-            self.file_names[item.get('Id')] = os.path.basename(item.get('Path'))
+            item_id = item.get("Id")
+            if item_id in (None, ""):
+                continue
+            item_id = str(item_id)
+            item_path = item.get("Path")
+            if isinstance(item_path, (str, bytes, os.PathLike)) and item_path:
+                self.file_names[item_id] = os.path.basename(item_path)
 
-            self.cached_studios[item.get('Id')] = item.get('Studios')
-            self.cached_people[item.get('Id')] = item.get('People')
-            self.cached_locations[item.get('Id')] = item.get('ProductionLocations')  # Meet english
-            self.cached_runtime[item.get('Id')] = item.get('RunTimeTicks')
+            self.cached_studios[item_id] = item.get('Studios')
+            self.cached_people[item_id] = item.get('People')
+            self.cached_locations[item_id] = item.get('ProductionLocations')  # Meet english
+            self.cached_runtime[item_id] = item.get('RunTimeTicks')
         return
         if not self.library_id:
             return
@@ -2070,7 +2101,8 @@ class EmbyServer:
                     'studio': studio, # only one
                     'genres': genres,
                     'titleSort': item.get('SortName'),
-                    'contentRating': item.get('OfficialRating')
+                    'contentRating': item.get('OfficialRating'),
+                    '_people': people,
                     # not working
                     # 'media': [item.get('Path')],
                     # 'locations':[item.get('Path')] # todo: working?

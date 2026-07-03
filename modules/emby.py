@@ -2021,6 +2021,9 @@ class Emby(Library):
                 if include_person:
                     return False
 
+        if emby_query_params.get("_Resolutions") or emby_query_params.get("_RequireHdr"):
+            return False
+
         supported_keys = {
             "Recursive",
             "Fields",
@@ -2524,6 +2527,8 @@ class Emby(Library):
             if sort_key.lower() == "random":
                 random.shuffle(filtered)
             else:
+                sort_keys = [key.strip() for key in str(sort_key).split(",") if key.strip()]
+
                 def _normalize_rating(value):
                     if isinstance(value, (int, float)) and not isinstance(value, bool):
                         return float(value)
@@ -2549,13 +2554,13 @@ class Emby(Library):
                         return None
                     return None
 
-                def sort_value(item):
-                    value = item.get(sort_key)
-                    if sort_key in ["PremiereDate", "DateCreated"]:
+                def sort_value_for_key(item, key):
+                    value = item.get(key)
+                    if key in ["PremiereDate", "DateCreated"]:
                         value = self._parse_emby_datetime(value) or datetime.min.replace(tzinfo=timezone.utc)
-                    elif value is None and sort_key == "Name":
+                    elif value is None and key == "Name":
                         value = item.get("SortName") or item.get("Name") or ""
-                    elif isinstance(sort_key, str) and "rating" in sort_key.lower():
+                    elif isinstance(key, str) and "rating" in key.lower():
                         value = _normalize_rating(value)
                     return value
 
@@ -2563,10 +2568,11 @@ class Emby(Library):
                     sortable = []
                     none_bucket = []
                     for item in filtered:
-                        value = sort_value(item)
-                        if value is None:
+                        values = [sort_value_for_key(item, key) for key in sort_keys]
+                        if not values or all(value is None for value in values):
                             none_bucket.append(item)
                         else:
+                            value = tuple("" if value is None else value for value in values)
                             sortable.append((value, item))
                     sortable.sort(key=lambda pair: pair[0], reverse=reverse_order)
                     filtered = [item for _, item in sortable] + none_bucket
@@ -2637,6 +2643,38 @@ class Emby(Library):
         # Initialize 'Years' list and item types
         years_list = []
         item_types = set()
+        return_parent_level = None
+        needs_media_fields = False
+
+        def normalize_resolution_filter(value):
+            normalized = str(value).strip().lower()
+            aliases = {
+                "2160": "4k",
+                "2160p": "4k",
+                "uhd": "4k",
+                "hd": "720p",
+                "1080": "1080p",
+                "720": "720p",
+                "576": "576p",
+                "480": "480p",
+                "sd": "sd",
+                "hdr": "hdr",
+                "hdr10": "hdr",
+                "hdr10+": "plus",
+                "hdr10plus": "plus",
+                "plus": "plus",
+                "dvhdr": "dvhdr",
+                "dvhdrplus": "dvhdrplus",
+                "dv": "dvhdr",
+                "hlg": "hlg",
+            }
+            if normalized in aliases:
+                return aliases[normalized]
+            if normalized == "4k" or normalized.endswith("p"):
+                return normalized
+            if normalized.isdigit():
+                return f"{normalized}p"
+            return normalized
 
         # Process 'type' parameter
         type_values = args.get('type', [])
@@ -2653,6 +2691,7 @@ class Emby(Library):
                 item_types.add('BoxSet')  # Assuming 'BoxSet' for collections
             else:
                 raise Failed(f"Unknown type value: {type_value} {uri_args}")
+        requested_item_types = set(item_types)
 
         # Process each parameter
         for key, values in param_values.items():
@@ -2832,6 +2871,8 @@ class Emby(Library):
                             emby_query_params['SortBy'] = 'Random'
                         elif sort_field in ['addedAt', 'episode.addedAt']:
                             emby_query_params['SortBy'] = 'DateCreated'
+                        elif sort_field in ['season.index,season.titleSort']:
+                            emby_query_params['SortBy'] = 'IndexNumber,SortName'
                         else:
                             unknown_params['sort_field'] = sort_field
 
@@ -2842,18 +2883,18 @@ class Emby(Library):
                     elif key_decoded in ('year', 'show.year', 'episode.year'):
                         if value_decoded.isdigit():
                             years_list.append(value_decoded)
-                    elif key_decoded in ['resolution']:
-                        index_key = value_decoded
-                        lower_index = index_key.lower()
-                        if lower_index == "hd":
-                            index_key = "720p"
-                            lower_index = "720p"
-                        elif lower_index not in ["4k"] and not lower_index.endswith("p"):
-                            index_key = f"{index_key}p"
-                            lower_index = index_key.lower()
-                        normalized_key = lower_index
-                        if normalized_key == "4k":
-                            normalized_key = "4k"
+                    elif key_decoded in ['resolution', 'show.resolution', 'episode.resolution']:
+                        needs_media_fields = True
+                        if key_decoded.startswith("episode."):
+                            if "Series" in requested_item_types:
+                                item_types.discard("Series")
+                                item_types.add("Episode")
+                                return_parent_level = "Series"
+                            elif "Season" in requested_item_types:
+                                item_types.discard("Season")
+                                item_types.add("Episode")
+                                return_parent_level = "Season"
+                        normalized_key = normalize_resolution_filter(value_decoded)
                         media_by_resolutions = self.EmbyServer.media_by_resolution
                         if not isinstance(media_by_resolutions, dict):
                             self.EmbyServer.get_resolutions()
@@ -2864,7 +2905,17 @@ class Emby(Library):
                                 value_decoded,
                             )
                         emby_query_params.setdefault("_Resolutions", set()).add(normalized_key)
-                    elif key_decoded == 'hdr':
+                    elif key_decoded in ['hdr', 'show.hdr', 'episode.hdr']:
+                        needs_media_fields = True
+                        if key_decoded.startswith("episode."):
+                            if "Series" in requested_item_types:
+                                item_types.discard("Series")
+                                item_types.add("Episode")
+                                return_parent_level = "Series"
+                            elif "Season" in requested_item_types:
+                                item_types.discard("Season")
+                                item_types.add("Episode")
+                                return_parent_level = "Season"
                         if value_decoded == "1":
                             emby_query_params['_RequireHdr'] = True
                     elif key_decoded in ['audio_language', 'audioLanguage']:
@@ -2922,6 +2973,34 @@ class Emby(Library):
             emby_query_params['IncludeItemTypes'] = ','.join(item_types)
 
         emby_query_params['ParentId'] = self.Emby.get("Id")
+        if needs_media_fields:
+            required_fields = {
+                "CommunityRating",
+                "CriticRating",
+                "Genres",
+                "ImageTags",
+                "IndexNumber",
+                "MediaStreams",
+                "OfficialRating",
+                "ParentId",
+                "ParentIndexNumber",
+                "Path",
+                "People",
+                "ProductionYear",
+                "ProviderIds",
+                "RunTimeTicks",
+                "SeasonName",
+                "SeriesId",
+                "SeriesName",
+                "SortName",
+                "Studios",
+            }
+            existing_fields = emby_query_params.get("Fields")
+            if existing_fields:
+                required_fields.update(
+                    field.strip() for field in str(existing_fields).split(",") if field.strip()
+                )
+            emby_query_params["Fields"] = ",".join(sorted(required_fields))
 
         needs_resolution_filter = bool(
             emby_query_params.get("_Resolutions") or emby_query_params.get("_RequireHdr")
@@ -2957,6 +3036,10 @@ class Emby(Library):
             items = self.EmbyServer.get_items(api_query_params)
             if items is None:
                 items = []
+            if needs_resolution_filter and items:
+                self.EmbyServer.update_cache_with_items(items)
+                self.EmbyServer.cache_filenames(items)
+                self.EmbyServer.get_resolutions()
             
             # Optimization: Only apply local filters for parameters not handled by the API (starting with _)
             post_filter_params = {k: v for k, v in emby_query_params.items() if k.startswith('_')}
@@ -2965,14 +3048,18 @@ class Emby(Library):
                 if filtered_items is not None:
                     items = filtered_items
 
-        all_shows = None
-        if is_show:
-            series_ids = list({item.get("SeriesId") for item in items if item.get("SeriesId")})
+        parent_items = None
+        if return_parent_level == "Series" or is_show:
+            series_ids = list(dict.fromkeys(str(item.get("SeriesId")) for item in items if item.get("SeriesId")))
             if series_ids:
-                all_shows = list(self.EmbyServer.get_items_bulk(series_ids).values())
+                parent_items = list(self.EmbyServer.get_items_bulk(series_ids).values())
+        elif return_parent_level == "Season":
+            season_ids = list(dict.fromkeys(str(item.get("ParentId") or item.get("SeasonId")) for item in items if item.get("ParentId") or item.get("SeasonId")))
+            if season_ids:
+                parent_items = list(self.EmbyServer.get_items_bulk(season_ids).values())
 
-        if all_shows:
-            my_output= self.EmbyServer.convert_emby_to_plex(all_shows)
+        if parent_items:
+            my_output= self.EmbyServer.convert_emby_to_plex(parent_items)
         else:
             my_output= self.EmbyServer.convert_emby_to_plex(items)
         # Convert Emby items to Plex format
