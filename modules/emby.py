@@ -24,6 +24,14 @@ from urllib.parse import unquote, parse_qsl, parse_qs, urlparse
 
 logger = util.logger
 
+asset_image_extensions = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def get_asset_image_matches(file_filter, file_name):
+    matches = [m for m in util.glob_filter(file_filter) if os.path.isfile(m) and os.path.splitext(m)[1].lower() in asset_image_extensions]
+    exact_matches = [m for m in matches if os.path.splitext(os.path.basename(m))[0].lower() == file_name.lower()]
+    return exact_matches or matches
+
 emby_lang_map = {
     "eng": "en", "fre": "fr", "ger": "de", "ita": "it", "spa": "es", "jpn": "ja", "kor": "ko", "chi": "zh",
     "rus": "ru", "por": "pt", "swe": "sv", "nor": "no", "dan": "da", "fin": "fi", "dut": "nl", "pol": "pl",
@@ -1140,6 +1148,81 @@ class Emby(Library):
     def needs_collection_mode_update(self, collection, mode):
         return False
 
+    def _collection_warning(self, collection, attribute):
+        title = getattr(collection, "title", collection)
+        logger.warning(f"Collection Warning: {attribute} is not supported for Emby collection {title}; skipped")
+        return False
+
+    def _collection_id(self, collection):
+        collection_id = getattr(collection, "ratingKey", None)
+        if not collection_id and getattr(collection, "title", None):
+            collection_id = self.EmbyServer.get_collection_id(collection.title)
+        return str(collection_id) if collection_id else None
+
+    def update_collection_metadata(self, collection, title=None, summary=None, sort_title=None, content_rating=None):
+        collection_id = self._collection_id(collection)
+        if collection_id is None:
+            logger.warning(f"Collection Warning: Unable to identify Emby collection {getattr(collection, 'title', collection)}; metadata skipped")
+            return False
+        current_item = self.EmbyServer.get_item(collection_id)
+        if current_item is None:
+            logger.warning(f"Collection Warning: Unable to load Emby collection {getattr(collection, 'title', collection)} ({collection_id}); metadata skipped")
+            return False
+
+        update_payload = {}
+        if title is not None and str(current_item.get("Name")) != str(title):
+            update_payload["Name"] = title
+        if summary is not None and str(current_item.get("Overview")) != str(summary):
+            update_payload["Overview"] = summary
+        if sort_title is not None and str(current_item.get("SortName")) != str(sort_title):
+            update_payload["ForcedSortName"] = sort_title
+        if content_rating is not None and str(current_item.get("OfficialRating")) != str(content_rating):
+            update_payload["OfficialRating"] = content_rating
+
+        if update_payload:
+            try:
+                response = self.EmbyServer.update_item(collection_id, update_payload)
+            except Exception as e:
+                logger.stacktrace()
+                logger.warning(f"Collection Warning: Failed to update Emby collection {getattr(collection, 'title', collection)} ({collection_id}): {e}")
+                return False
+            if response is None:
+                logger.warning(f"Collection Warning: Failed to update Emby collection {getattr(collection, 'title', collection)} ({collection_id}); Emby returned no response")
+                return False
+            if hasattr(response, "status_code") and response.status_code >= 400:
+                logger.warning(f"Collection Warning: Failed to update Emby collection {getattr(collection, 'title', collection)} ({collection_id}): {response.status_code} {response.text}")
+                return False
+
+        if title is not None:
+            collection.title = title
+        if summary is not None:
+            collection.summary = summary
+        if sort_title is not None:
+            collection.titleSort = sort_title
+        if content_rating is not None:
+            collection.contentRating = content_rating
+        return True
+
+    def collection_mode_query(self, collection, data):
+        return self._collection_warning(collection, f"collection_mode={data}")
+
+    def collection_order_query(self, collection, data):
+        return self._collection_warning(collection, f"collection_order={data}")
+
+    def collection_visibility(self, collection):
+        self._collection_warning(collection, "collection visibility")
+        return {"library": False, "home": False, "shared": False}
+
+    def collection_visibility_update(self, collection, visibility=None, library=None, home=None, shared=None):
+        requested = []
+        if library is not None:
+            requested.append(f"visible_library={library}")
+        if home is not None:
+            requested.append(f"visible_home={home}")
+        if shared is not None:
+            requested.append(f"visible_shared={shared}")
+        return self._collection_warning(collection, ", ".join(requested) if requested else "collection visibility")
+
     def get_item_display_title(self, item_to_sort, sort=False):
         """Returns the display title for an item, optionally using the sort title."""
 
@@ -1359,8 +1442,11 @@ class Emby(Library):
             item.refresh()
             raise Failed(e)
 
-    def upload_images(self, item, poster=None, background=None, logo=None, overlay=False):
+    def upload_images(self, item, poster=None, background=None, logo=None, square_art=None, overlay=False):
         """Manages the upload of multiple images for an item, checking against cache to avoid redundant uploads."""
+        if square_art is not None:
+            logger.debug(f"Metadata: Square Art skipped for Emby item {getattr(item, 'title', item)} ({getattr(item, 'ratingKey', 'unknown')}); Emby square art upload is not supported")
+
         poster_uploaded = False
         if poster is not None:
             try:
@@ -1428,7 +1514,7 @@ class Emby(Library):
             if logo_uploaded:
                 self.config.Cache.update_image_map(item.ratingKey, f"{self.image_table_name}_logos", "", logo.compare)
 
-        return poster_uploaded, background_uploaded, logo_uploaded
+        return poster_uploaded, background_uploaded, logo_uploaded, False
 
 
     def _invalidate_metadata_caches(self, rating_key=None):
@@ -2116,6 +2202,7 @@ class Emby(Library):
         poster = None
         background = None
         logo = None
+        square_art = None
 
         if asset_directory is None:
             asset_directory = self.asset_directory
@@ -2183,7 +2270,7 @@ class Emby(Library):
                                 item_asset_directory = os.path.abspath(matches[0])
                                 break
                 else:
-                    matches = util.glob_filter(os.path.join(ad, f"{file_name}.*"))
+                    matches = get_asset_image_matches(os.path.join(ad, f"{file_name}.*"), file_name)
                     if len(matches) > 0:
                         item_asset_directory = ad
                 if item_asset_directory:
@@ -2196,23 +2283,31 @@ class Emby(Library):
                         logger.warning(f"Asset Warning: Asset Directory Not Found and Created: {item_asset_directory}")
                     else:
                         raise Failed(f"Asset Warning: Unable to find asset folder: '{folder_name}'")
-                return None, None, None, item_asset_directory, folder_name
+                return None, None, None, square_art, item_asset_directory, folder_name
 
         poster_filter = os.path.join(item_asset_directory, f"{file_name}.*")
         background_filter = os.path.join(item_asset_directory, "background.*" if file_name == "poster" else f"{file_name}_background.*")
         logo_filter = os.path.join(item_asset_directory, "logo.*" if file_name == "poster" else f"{file_name}_logo.*")
+        square_art_filter = os.path.join(item_asset_directory, "square.*" if file_name == "poster" else f"{file_name}_square.*")
 
-        poster_matches = util.glob_filter(poster_filter)
+        poster_matches = get_asset_image_matches(poster_filter, file_name)
         if len(poster_matches) > 0:
             poster = ImageData("asset_directory", os.path.abspath(poster_matches[0]), prefix=prefix, is_url=False)
 
-        background_matches = util.glob_filter(background_filter)
+        background_name = "background" if file_name == "poster" else f"{file_name}_background"
+        background_matches = get_asset_image_matches(background_filter, background_name)
         if len(background_matches) > 0:
             background = ImageData("asset_directory", os.path.abspath(background_matches[0]), prefix=prefix, image_type="background", is_url=False)
 
-        logo_matches = util.glob_filter(logo_filter)
+        logo_name = "logo" if file_name == "poster" else f"{file_name}_logo"
+        logo_matches = get_asset_image_matches(logo_filter, logo_name)
         if len(logo_matches) > 0:
             logo = ImageData("asset_directory", os.path.abspath(logo_matches[0]), prefix=prefix, image_type="logo", is_url=False)
+
+        square_art_name = "square" if file_name == "poster" else f"{file_name}_square"
+        square_art_matches = get_asset_image_matches(square_art_filter, square_art_name)
+        if len(square_art_matches) > 0:
+            square_art = ImageData("asset_directory", os.path.abspath(square_art_matches[0]), prefix=prefix, image_type="square_art", is_url=False)
 
         if is_top_level and self.asset_folders and self.dimensional_asset_rename and (not poster or not background):
             for file in util.glob_filter(os.path.join(item_asset_directory, "*.*")):
@@ -2233,7 +2328,60 @@ class Emby(Library):
                     except OSError:
                         logger.error(f"Asset Error: Failed to open image: {file}")
 
-        return poster, background, logo, item_asset_directory, folder_name
+        return poster, background, logo, square_art, item_asset_directory, folder_name
+
+    def find_and_upload_assets(self, item, current_labels, asset_directory=None):
+        item_dir = None
+        name = None
+        try:
+            poster, background, logo, square_art, item_dir, name = self.find_item_assets(item, asset_directory=asset_directory)
+            has_overlay = "Overlay" in current_labels
+            upload_poster = None if has_overlay else poster
+            if upload_poster or background or logo or square_art:
+                self.upload_images(item, poster=upload_poster, background=background, logo=logo, square_art=square_art)
+            if has_overlay:
+                logger.info(f"Item: {name} has an Overlay and will be updated when overlays are run")
+            elif not poster and not background and not logo and not square_art and self.show_missing_assets:
+                logger.warning(f"Asset Warning: No poster or background found in the assets folder '{item_dir}'")
+        except Failed as e:
+            if self.show_missing_assets:
+                logger.warning(e)
+
+        if isinstance(item, Show) and ((self.asset_folders and item_dir) or not self.asset_folders):
+            missing_seasons = ""
+            missing_episodes = ""
+            found_season = False
+            found_episode = False
+            for season in self.get_seasons(item):
+                try:
+                    season_poster, season_background, season_logo, season_square_art, _, _ = self.find_item_assets(season, item_asset_directory=item_dir, asset_directory=asset_directory, folder_name=name)
+                    if season_poster:
+                        found_season = True
+                    elif self.show_missing_season_assets and season.seasonNumber and season.seasonNumber > 0:
+                        missing_seasons += f"\nMissing Season {season.seasonNumber} Poster"
+                    if season_poster or season_background or season_logo or season_square_art:
+                        has_season_overlay = "Overlay" in [la.tag for la in self.item_labels(season)]
+                        self.upload_images(season, poster=None if has_season_overlay else season_poster, background=season_background, logo=season_logo, square_art=season_square_art)
+                except Failed as e:
+                    if self.show_missing_assets:
+                        logger.warning(e)
+
+                for episode in self.get_episodes(season):
+                    try:
+                        season_episode = getattr(episode, "seasonEpisode", None)
+                        if season_episode:
+                            episode_poster, episode_background, episode_logo, episode_square_art, _, _ = self.find_item_assets(episode, item_asset_directory=item_dir, asset_directory=asset_directory, folder_name=name)
+                            if episode_poster or episode_background or episode_logo or episode_square_art:
+                                found_episode = True
+                                has_episode_overlay = "Overlay" in [la.tag for la in self.item_labels(episode)]
+                                self.upload_images(episode, poster=None if has_episode_overlay else episode_poster, background=episode_background, logo=episode_logo, square_art=episode_square_art)
+                            elif self.show_missing_episode_assets:
+                                missing_episodes += f"\nMissing {season_episode.upper()} Title Card"
+                    except Failed as e:
+                        if self.show_missing_assets:
+                            logger.warning(e)
+            if (found_season and missing_seasons) or (found_episode and missing_episodes):
+                logger.info(f"Missing Posters for {item.title}{missing_seasons}{missing_episodes}")
 
     def get_ids(self, item):
         provider_ids = self.EmbyServer.get_provider_ids(item)

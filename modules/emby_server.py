@@ -208,6 +208,14 @@ class Person:
 class EmbyServer:
 
     CUSTOM_RATING_PROVIDER = "CustomRating"
+    NON_MEDIA_ITEM_TYPES = {
+        "Folder",
+        "UserRootFolder",
+        "CollectionFolder",
+        "AggregateFolder",
+        "ManualPlaylistsFolder",
+        "PlaylistsFolder",
+    }
 
     def __init__(self, server_url, user_id, api_key, config, library_name = None):
 
@@ -799,6 +807,27 @@ class EmbyServer:
         response_name.raise_for_status()
         data_name = response_name.json()
 
+    def _is_non_media_item(self, item):
+        if not isinstance(item, dict):
+            return False
+        item_type = item.get("Type")
+        return item_type in self.NON_MEDIA_ITEM_TYPES or (isinstance(item_type, str) and item_type.endswith("Folder"))
+
+    def _debug_skip_non_media_item(self, item):
+        logger.debug(
+            "Skipping non-media Emby object: "
+            f"Id={item.get('Id')!r}, Name={item.get('Name')!r}, Type={item.get('Type')!r}"
+        )
+
+    def _filter_non_media_items(self, items):
+        filtered_items = []
+        for item in items or []:
+            if self._is_non_media_item(item):
+                self._debug_skip_non_media_item(item)
+                continue
+            filtered_items.append(item)
+        return filtered_items
+
     #added
     def get_actor_id(self, name):
         """
@@ -1151,7 +1180,7 @@ class EmbyServer:
                 response = requests.get(url, headers=self.headers, params=params)
                 response.raise_for_status()
                 data = response.json()
-                batch_results = data.get("Items", [])
+                batch_results = self._filter_non_media_items(data.get("Items", []))
                 all_results.extend(batch_results)
 
                 # If fewer results than the batch size, we are done
@@ -1840,7 +1869,7 @@ class EmbyServer:
             except ValueError:
                 logger.error(f"Invalid Limit value: {query_params['Limit']}")
                 raise Failed(f"Invalid Limit value: {query_params['Limit']}")
-        return filtered_results
+        return self._filter_non_media_items(filtered_results)
 
     def get_seasons(self, series_id):
         return self.get_items(params={"ParentId": series_id}, include_item_types=["Season"])
@@ -2016,7 +2045,7 @@ class EmbyServer:
             return []
 
         # emby_data_list = sorted(set(emby_data_list))
-        for item in emby_data_list:
+        for item in self._filter_non_media_items(emby_data_list):
             # print(item)
             if item is None:
                 logger.info("Item is None")

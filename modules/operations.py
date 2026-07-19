@@ -180,6 +180,9 @@ class Operations:
             ep_reset_edits = {}
             ep_lock_edits = {}
             ep_unlock_edits = {}
+            asset_uploader = getattr(self.library, "find_and_upload_assets", None)
+            if self.library.assets_for_all and self.library.asset_directory and not callable(asset_uploader):
+                logger.warning(f"Asset Warning: assets_for_all is not supported for {self.library.name} Library; skipped")
 
             for i, item in enumerate(items, 1):
                 logger.info("")
@@ -200,8 +203,8 @@ class Operations:
                     logger.info("Ignored by ignore_ids or ignore_imdb_ids")
                     continue
 
-                if self.library.assets_for_all and self.library.asset_directory:
-                    self.library.find_and_upload_assets(item, current_labels)
+                if self.library.assets_for_all and self.library.asset_directory and callable(asset_uploader):
+                    asset_uploader(item, current_labels)
 
                 locked_fields = [f.name for f in item.fields if f.locked]
 
@@ -1320,10 +1323,13 @@ class Operations:
                 logger.info("")
                 logger.separator(f"Unconfigured Mass Collection Mode to {self.library.mass_collection_mode} for {self.library.name} Library", space=False, border=False)
                 logger.info("")
-                for col in unconfigured_collections:
-                    if int(col.collectionMode) not in plex.collection_mode_keys or plex.collection_mode_keys[int(col.collectionMode)] != self.library.mass_collection_mode:
-                        self.library.collection_mode_query(col, self.library.mass_collection_mode)
-                        logger.info(f"{col.title} Collection Mode Updated")
+                if self.library.is_emby:
+                    logger.warning(f"Collection Warning: mass_collection_mode is not supported for Emby library {self.library.name}; skipped")
+                else:
+                    for col in unconfigured_collections:
+                        if int(col.collectionMode) not in plex.collection_mode_keys or plex.collection_mode_keys[int(col.collectionMode)] != self.library.mass_collection_mode:
+                            self.library.collection_mode_query(col, self.library.mass_collection_mode)
+                            logger.info(f"{col.title} Collection Mode Updated")
 
         if self.library.metadata_backup:
             logger.info("")

@@ -1702,14 +1702,20 @@ class CollectionBuilder:
         self.do_missing = not self.config.no_missing and (self.details["show_missing"] or self.do_report or (self.library.Radarr and self.radarr_details["add_missing"]) or (self.library.Sonarr and self.sonarr_details["add_missing"]))
         if self.build_collection:
             if self.obj and ((self.smart and not self.obj.smart) or (not self.smart and self.obj.smart)):
-                logger.info("")
-                logger.error(f"{self.Type} Error: Converting {self.obj.title} to a {'smart' if self.smart else 'normal'} collection")
-                self.library.delete(self.obj)
-                self.obj = None
+                if self.library.is_emby and self.smart and not self.obj.smart:
+                    logger.warning(f"Collection Warning: Emby does not support Plex smart collection conversion for {self.obj.title}; syncing as a regular Emby collection")
+                else:
+                    logger.info("")
+                    logger.error(f"{self.Type} Error: Converting {self.obj.title} to a {'smart' if self.smart else 'normal'} collection")
+                    self.library.delete(self.obj)
+                    self.obj = None
             if self.smart:
                 check_url = self.smart_url if self.smart_url else self.smart_label_url
-                if self.obj:
-                    if check_url != self.library.smart_filter(self.obj):
+                if self.obj and check_url:
+                    if self.library.is_emby:
+                        self.library.update_smart_collection(self.obj, check_url)
+                        logger.info(f"Metadata: Emby Collection synced from smart filter {check_url}")
+                    elif check_url != self.library.smart_filter(self.obj):
                         self.library.update_smart_collection(self.obj, check_url)
                         logger.info(f"Metadata: Smart Collection updated to {check_url}")
                 self.beginning_count = len(self.library.fetchItems(check_url)) if check_url else 0
@@ -4825,8 +4831,14 @@ class CollectionBuilder:
             self.library.item_reload(self.obj)
             # self.obj.batchEdits()
             batch_display = "Collection Metadata Edits"
+            is_emby_collection = self.library.is_emby
+            emby_metadata_updates = {}
+            emby_metadata_failed = False
             if summary[1] and str(summary[1]) != str(self.obj.summary):
-                self.obj.editSummary(summary[1])
+                if is_emby_collection:
+                    emby_metadata_updates["summary"] = str(summary[1])
+                else:
+                    self.obj.editSummary(summary[1])
                 batch_display += f"\nSummary ({summary[0]}) | {summary[1]:<25}"
 
             if "sort_title" in self.details:
@@ -4839,12 +4851,21 @@ class CollectionBuilder:
                             break
                     new_sort_title = new_sort_title.replace("<<title>>", title)
                 if new_sort_title != str(self.obj.titleSort):
-                    self.obj.editSortTitle(new_sort_title)
+                    if is_emby_collection:
+                        emby_metadata_updates["sort_title"] = new_sort_title
+                    else:
+                        self.obj.editSortTitle(new_sort_title)
                     batch_display += f"\nSort Title | {new_sort_title}"
 
             if "content_rating" in self.details and str(self.details["content_rating"]) != str(self.obj.contentRating):
-                self.obj.editContentRating(self.details["content_rating"])
+                if is_emby_collection:
+                    emby_metadata_updates["content_rating"] = self.details["content_rating"]
+                else:
+                    self.obj.editContentRating(self.details["content_rating"])
                 batch_display += f"\nContent Rating | {self.details['content_rating']}"
+
+            if emby_metadata_updates:
+                emby_metadata_failed = not self.library.update_collection_metadata(self.obj, **emby_metadata_updates)
 
             add_tags = self.details["label"] if "label" in self.details else []
             remove_tags = self.details["label.remove"] if "label.remove" in self.details else None
@@ -4861,15 +4882,20 @@ class CollectionBuilder:
             if len(batch_display) > 25:
                 try:
                     # self.obj.saveEdits()
-                    logger.info("Metadata: Update Completed")
-                    updated_details.append("Metadata")
+                    if emby_metadata_failed:
+                        logger.warning("Metadata: Update Incomplete")
+                    else:
+                        logger.info("Metadata: Update Completed")
+                        updated_details.append("Metadata")
                 except NotFound:
                     logger.error("Metadata: Failed to Update Please delete the collection and run again")
                 logger.info("")
 
             advance_update = False
             if "collection_mode" in self.details:
-                if (self.blank_collection and self.created) or int(self.obj.collectionMode) not in plex.collection_mode_keys or plex.collection_mode_keys[int(self.obj.collectionMode)] != self.details["collection_mode"]:
+                if is_emby_collection:
+                    self.library.collection_mode_query(self.obj, self.details["collection_mode"])
+                elif (self.blank_collection and self.created) or int(self.obj.collectionMode) not in plex.collection_mode_keys or plex.collection_mode_keys[int(self.obj.collectionMode)] != self.details["collection_mode"]:
                     if self.blank_collection and self.created:
                         self.library.collection_mode_query(self.obj, "hide")
                         logger.info("Collection Mode | hide")
@@ -4880,49 +4906,62 @@ class CollectionBuilder:
                     advance_update = True
 
             if "collection_filtering" in self.details:
-                try:
-                    self.library.edit_query(
-                        self.obj,
-                        {"collectionFilterBasedOnUser": 0 if self.details["collection_filtering"] == "admin" else 1},
-                        advanced=True,
-                    )
-                    advance_update = True
-                except NotFound:
-                    logger.error("Collection Error: collection_filtering requires a more recent version of Plex Media Server")
+                if is_emby_collection:
+                    logger.warning(f"Collection Warning: collection_filtering is not supported for Emby collection {self.name}; skipped")
+                else:
+                    try:
+                        self.library.edit_query(
+                            self.obj,
+                            {"collectionFilterBasedOnUser": 0 if self.details["collection_filtering"] == "admin" else 1},
+                            advanced=True,
+                        )
+                        advance_update = True
+                    except NotFound:
+                        logger.error("Collection Error: collection_filtering requires a more recent version of Plex Media Server")
 
             if "collection_order" in self.details:
-                if int(self.obj.collectionSort) not in plex.collection_order_keys or plex.collection_order_keys[int(self.obj.collectionSort)] != self.details["collection_order"]:
+                if is_emby_collection:
+                    self.library.collection_order_query(self.obj, self.details["collection_order"])
+                elif int(self.obj.collectionSort) not in plex.collection_order_keys or plex.collection_order_keys[int(self.obj.collectionSort)] != self.details["collection_order"]:
                     self.library.collection_order_query(self.obj, self.details["collection_order"])
                     logger.info(f"Collection Order | {self.details['collection_order']}")
                     advance_update = True
 
             if "visible_library" in self.details or "visible_home" in self.details or "visible_shared" in self.details:
-                visibility = self.library.collection_visibility(self.obj)
-                visible_library = None
-                visible_home = None
-                visible_shared = None
-
-                if "visible_library" in self.details and self.details["visible_library"] != visibility["library"]:
-                    visible_library = self.details["visible_library"]
-
-                if "visible_home" in self.details and self.details["visible_home"] != visibility["home"]:
-                    visible_home = self.details["visible_home"]
-
-                if "visible_shared" in self.details and self.details["visible_shared"] != visibility["shared"]:
-                    visible_shared = self.details["visible_shared"]
-
-                if visible_library is not None or visible_home is not None or visible_shared is not None:
+                if is_emby_collection:
                     self.library.collection_visibility_update(
                         self.obj,
-                        visibility=visibility,
-                        library=visible_library,
-                        home=visible_home,
-                        shared=visible_shared,
+                        library=self.details.get("visible_library"),
+                        home=self.details.get("visible_home"),
+                        shared=self.details.get("visible_shared"),
                     )
-                    advance_update = True
-                    logger.info("Collection Visibility Updated")
+                else:
+                    visibility = self.library.collection_visibility(self.obj)
+                    visible_library = None
+                    visible_home = None
+                    visible_shared = None
 
-            if self.obj is not None and self.library and not self.playlist and not self.overlay:
+                    if "visible_library" in self.details and self.details["visible_library"] != visibility["library"]:
+                        visible_library = self.details["visible_library"]
+
+                    if "visible_home" in self.details and self.details["visible_home"] != visibility["home"]:
+                        visible_home = self.details["visible_home"]
+
+                    if "visible_shared" in self.details and self.details["visible_shared"] != visibility["shared"]:
+                        visible_shared = self.details["visible_shared"]
+
+                    if visible_library is not None or visible_home is not None or visible_shared is not None:
+                        self.library.collection_visibility_update(
+                            self.obj,
+                            visibility=visibility,
+                            library=visible_library,
+                            home=visible_home,
+                            shared=visible_shared,
+                        )
+                        advance_update = True
+                        logger.info("Collection Visibility Updated")
+
+            if self.obj is not None and self.library and not self.playlist and not self.overlay and not is_emby_collection:
                 rk = self.obj.ratingKey
                 if self.details.get("visible_library") or self.details.get("visible_home") or self.details.get("visible_shared"):
                     if rk not in self.library.hub_config_order:
