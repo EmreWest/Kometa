@@ -5,15 +5,29 @@ import re
 import sys
 import sysconfig
 import time
+import traceback
 import uuid
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 
-from packaging.requirements import InvalidRequirement, Requirement
-from packaging.version import parse
-
 from modules.logs import MyLogger
+
+code_base = os.path.dirname(os.path.abspath(__file__))
+default_dir = os.path.join(code_base, "config")
+
+
+def log_startup_error(message, error=None):
+    try:
+        log_dir = os.path.join(default_dir, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, "startup_error.log"), "a", encoding="utf-8") as startup_log:
+            startup_log.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] {' '.join(sys.argv)}\n")
+            startup_log.write(f"{message}\n")
+            if error is not None:
+                traceback.print_exception(type(error), error, error.__traceback__, file=startup_log)
+    except Exception:
+        pass
 
 # Increase file descriptor limit to prevent exhaustion with large libraries.
 # The `resource` module is POSIX-only; on Windows the OS manages FD limits
@@ -38,6 +52,8 @@ if sys.version_info[0] != 3 or sys.version_info[1] < 10:
     sys.exit(0)
 
 try:
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.version import parse
     import arrapi
     import dateutil
     import lxml
@@ -55,7 +71,9 @@ try:
     from PIL import ImageFile
     from plexapi.exceptions import BadRequest, NotFound
 except (ModuleNotFoundError, ImportError) as ie:
-    print(f"Requirements Error: Requirements are not installed.\nPlease follow the documentation for instructions on installing requirements. ({ie})")
+    message = f"Requirements Error: Requirements are not installed.\nPlease follow the documentation for instructions on installing requirements. ({ie})"
+    print(message)
+    log_startup_error(message, ie)
     sys.exit(0)
 
 system_versions = {
@@ -78,7 +96,6 @@ system_versions = {
     "tmdbapis": tmdbapis.__version__,
 }
 
-default_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 load_dotenv(os.path.join(default_dir, ".env"))
 
 arguments = {
@@ -242,7 +259,9 @@ if run_args["width"] < 90 or run_args["width"] > 300:
 if run_args["config"] and os.path.exists(run_args["config"]):
     default_dir = os.path.join(os.path.dirname(os.path.abspath(run_args["config"])))
 elif run_args["config"] and not os.path.exists(run_args["config"]):
-    print(f"Config Error: Configuration file (config.yml) not found at {os.path.abspath(run_args['config'])}")
+    message = f"Config Error: Configuration file (config.yml) not found at {os.path.abspath(run_args['config'])}"
+    print(message)
+    log_startup_error(message)
     sys.exit(0)
 elif not os.path.exists(os.path.join(default_dir, "config.yml")):
     git_branch = git_branch or "master"
@@ -253,12 +272,16 @@ elif not os.path.exists(os.path.join(default_dir, "config.yml")):
         if response.status_code == 200:
             with open(config_path, "w") as config_file:
                 config_file.write(response.text)
-            print(f"Configuration File ('config.yml') has been downloaded from GitHub (Branch: '{git_branch}') and saved as '{config_path}'. Please update this file with your API keys and other required settings.")
+            message = f"Configuration File ('config.yml') has been downloaded from GitHub (Branch: '{git_branch}') and saved as '{config_path}'. Please update this file with your API keys and other required settings."
+            print(message)
+            log_startup_error(message)
             sys.exit(1)
         else:
             raise requests.RequestException
     except requests.RequestException:
-        print(f"Config Error: Unable to download the configuration file from GitHub (URL: {github_url}'). Please save it as '{config_path}' before running Kometa again.")
+        message = f"Config Error: Unable to download the configuration file from GitHub (URL: {github_url}'). Please save it as '{config_path}' before running Kometa again."
+        print(message)
+        log_startup_error(message)
         sys.exit(1)
 
 
@@ -267,10 +290,16 @@ logger = MyLogger("Kometa", default_dir, run_args["width"], run_args["divider"][
 from modules import util  # noqa: E402
 
 util.logger = logger
-from modules.builder import CollectionBuilder  # noqa: E402
-from modules.config import ConfigFile  # noqa: E402
-from modules.request import Requests  # noqa: E402
-from modules.util import BuilderValidationError, Deleted, Failed, FilterFailed, MappingConvertError, NonExisting, NotScheduled, OverlayError, ServiceError  # noqa: E402
+try:
+    from modules.builder import CollectionBuilder  # noqa: E402
+    from modules.config import ConfigFile  # noqa: E402
+    from modules.request import Requests  # noqa: E402
+    from modules.util import BuilderValidationError, Deleted, Failed, FilterFailed, MappingConvertError, NonExisting, NotScheduled, OverlayError, ServiceError  # noqa: E402
+except Exception as import_error:
+    message = f"Startup Import Error: {import_error}"
+    print(message)
+    log_startup_error(message, import_error)
+    raise
 
 plex_maintenance_error = "Plex Critical Error: Response 503 (service_unavailable) received. Plex may be running startup or maintenance tasks. Kometa cannot proceed until this is complete"
 
