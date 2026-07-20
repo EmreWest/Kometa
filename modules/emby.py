@@ -1153,6 +1153,100 @@ class Emby(Library):
         logger.warning(f"Collection Warning: {attribute} is not supported for Emby collection {title}; skipped")
         return False
 
+    def _collection_tag_names(self, item):
+        names = set()
+        if not isinstance(item, dict):
+            return names
+        for tag in item.get("Tags") or []:
+            if isinstance(tag, dict):
+                name = tag.get("Name")
+            else:
+                name = tag
+            if name:
+                names.add(str(name))
+        for tag in item.get("TagItems") or []:
+            if isinstance(tag, dict):
+                name = tag.get("Name")
+            else:
+                name = tag
+            if name:
+                names.add(str(name))
+        return names
+
+    def _is_kometa_managed_collection(self, collection_id):
+        item = self.EmbyServer.get_item(collection_id)
+        return "Kometa" in self._collection_tag_names(item)
+
+    def _get_collection_id_with_name(self, name):
+        for candidate in self.get_collection_name_candidates(name):
+            collection_id = self.EmbyServer.get_collection_id(candidate)
+            if collection_id:
+                return str(collection_id), candidate
+        return None, None
+
+    def _rename_legacy_collection(self, collection_id, legacy_name, display_name):
+        try:
+            response = self.EmbyServer.update_item(collection_id, {"Name": display_name})
+        except Exception as err:
+            logger.stacktrace()
+            logger.warning(f"Collection Migration: failed to rename legacy collection {legacy_name} ({collection_id}) to {display_name}: {err}")
+            return False
+        if response is None:
+            logger.warning(f"Collection Migration: failed to rename legacy collection {legacy_name} ({collection_id}) to {display_name}; Emby returned no response")
+            return False
+        if hasattr(response, "status_code") and response.status_code >= 400:
+            logger.warning(f"Collection Migration: failed to rename legacy collection {legacy_name} ({collection_id}) to {display_name}: {response.status_code} {response.text}")
+            return False
+        self.EmbyServer.invalidate_collection_cache(legacy_name)
+        self.EmbyServer.invalidate_collection_cache(display_name, collection_id)
+        self._invalidate_metadata_caches(collection_id)
+        logger.info(
+            "Collection Migration:\n"
+            f"Legacy collection: {legacy_name}\n"
+            f"Target collection: {display_name}\n"
+            "Action: renamed in place"
+        )
+        return True
+
+    def _merge_legacy_collection(self, legacy_id, legacy_name, target_id, display_name):
+        if not self._is_kometa_managed_collection(legacy_id):
+            logger.warning(f"Collection Migration: legacy collection {legacy_name} exists but is not tagged Kometa; leaving it untouched")
+            return
+        target_items = self.EmbyServer.get_items_in_boxset(target_id)
+        target_keys = {str(item.ratingKey) for item in target_items}
+        legacy_items = self.EmbyServer.get_items_in_boxset(legacy_id)
+        missing_items = [item for item in legacy_items if str(item.ratingKey) not in target_keys]
+        if missing_items:
+            self.EmbyServer.add_remove_plex_object_from_collection(display_name, missing_items, "add", collection_id=target_id)
+
+        legacy_item = self.EmbyServer.get_item(legacy_id)
+        target_item = self.EmbyServer.get_item(target_id)
+        update_payload = {}
+        if legacy_item and target_item:
+            for source_key, target_key in [("Overview", "Overview"), ("SortName", "ForcedSortName"), ("OfficialRating", "OfficialRating")]:
+                if legacy_item.get(source_key) and not target_item.get(source_key):
+                    update_payload[target_key] = legacy_item[source_key]
+        if update_payload:
+            self.EmbyServer.update_item(target_id, update_payload)
+
+        deleted = False
+        try:
+            self.EmbyServer.delete_collection(legacy_id, is_id=True)
+            self.EmbyServer.invalidate_collection_cache(legacy_name)
+            deleted = True
+        except Exception:
+            logger.stacktrace()
+            logger.warning(f"Collection Migration: legacy duplicate {legacy_name} ({legacy_id}) was merged but could not be deleted")
+
+        logger.info(
+            "Collection Migration:\n"
+            "Legacy duplicate merged into prefixed Kometa collection\n"
+            f"Legacy collection: {legacy_name}\n"
+            f"Target collection: {display_name}\n"
+            f"Preserved members: {len(missing_items)}\n"
+            f"Deleted managed duplicate: {deleted}"
+        )
+
     def _collection_id(self, collection):
         collection_id = getattr(collection, "ratingKey", None)
         if not collection_id and getattr(collection, "title", None):
@@ -1194,7 +1288,11 @@ class Emby(Library):
                 return False
 
         if title is not None:
+            old_title = getattr(collection, "title", None)
             collection.title = title
+            if old_title and old_title != title:
+                self.EmbyServer.invalidate_collection_cache(old_title)
+                self.EmbyServer.invalidate_collection_cache(title, collection_id)
         if summary is not None:
             collection.summary = summary
         if sort_title is not None:
@@ -1565,7 +1663,8 @@ class Emby(Library):
     def create_blank_collection(self, title):
         """Creates a blank collection in Emby."""
         # Create a blank collection for Emby, add at least one title
-        return self.EmbyServer.create_collection(title,[self._emby_all_items[0].ratingKey], self.Emby.get("Id"))
+        display_title = self.get_collection_display_name(title)
+        return self.EmbyServer.create_collection(display_title, [self._emby_all_items[0].ratingKey], self.Emby.get("Id"))
 
 
 
@@ -1694,13 +1793,21 @@ class Emby(Library):
                     filter_choice = FilterChoiceEmby(key=key, title=key)
                     emby_items.append(filter_choice)
             return emby_items
+        elif my_search in ['collection', 'show.collection', 'season.collection', 'episode.collection']:
+            seen = set()
+            for collection in self.get_all_collections():
+                collection_id = str(getattr(collection, "ratingKey", ""))
+                collection_title = str(getattr(collection, "title", ""))
+                for title in [collection_title, self.get_collection_base_name(collection_title)]:
+                    if title and title not in seen:
+                        seen.add(title)
+                        emby_items.append(FilterChoiceEmby(key=collection_id or title, title=title))
+            return emby_items
         elif my_search in ['label', 'show.label']:
             labels = self.EmbyServer.get_emby_item_tags(self, self.Emby.get("Id"), search_all=True)
 
             labels += self.EmbyServer.get_emby_countries(self.Emby.get("Id"))
-            icon = '📺' if self.type == 'Show' else '🎥'
-            name = self.name
-            composed_name = f'{icon} {name} '
+            composed_name = self.collection_display_prefix()
             for label in labels:
                 key = str(label)
                 title = f"{str(label)}"
@@ -1708,8 +1815,8 @@ class Emby(Library):
                 # Create a FilterChoiceEmby object
                 filter_choice = FilterChoiceEmby(key=key, title=title)
                 emby_items.append(filter_choice)
-                if str(label).startswith(composed_name):
-                    label_new = str(label).replace(composed_name, '')
+                if composed_name and str(label).startswith(composed_name):
+                    label_new = self.get_collection_base_name(str(label))
                     key = str(label_new)
                     title = f"{str(label_new)}"
                     # Create a FilterChoiceEmby object
@@ -1954,6 +2061,9 @@ class Emby(Library):
 
     def alter_collection(self, items, collection, smart_label_collection=False, add=True, collection_id = None):
         """Adds or removes items from a collection (either a BoxSet or a tag-based collection)."""
+        collection_name = self.get_collection_display_name(collection.title if isinstance(collection, (Collection, Playlist)) else collection)
+        if not isinstance(items, list):
+            items = [items]
         maintain_status = True
         locked_items = []
         unlocked_items = []
@@ -1977,35 +2087,35 @@ class Emby(Library):
                         # Add items to collection with optional tagging
                         if use_tags:
                             for item in _items:
-                                self.EmbyServer.add_tags(item.ratingKey, [collection])
+                                self.EmbyServer.add_tags(item.ratingKey, [collection_name])
                         rating_keys = [item.ratingKey for item in _items]
-                        added = self.EmbyServer.add_to_collection(collection, rating_keys)
+                        added = self.EmbyServer.add_to_collection(collection_name, rating_keys)
                         if not added:
-                            self.EmbyServer.create_collection(collection, rating_keys, locked=locked, parent_id=self.Emby.get("Id"))
+                            self.EmbyServer.create_collection(collection_name, rating_keys, locked=locked, parent_id=self.Emby.get("Id"))
                         self._invalidate_metadata_caches()
 
                     else:
                         # Remove items from collection with optional tag cleanup
                         if use_tags:
                             for item in _items:
-                                self.EmbyServer.remove_tags(item.ratingKey, [collection])
-                        self.EmbyServer.add_remove_plex_object_from_collection(collection, _items, 'delete')
+                                self.EmbyServer.remove_tags(item.ratingKey, self.get_collection_name_candidates(collection_name))
+                        self.EmbyServer.add_remove_plex_object_from_collection(collection_name, _items, 'delete')
                         self._invalidate_metadata_caches()
 
                 # Traditionelle Sammlungen (BoxSets in Emby)
                 elif add:
                     rating_keys = [item.ratingKey for item in _items]
-                    added = self.EmbyServer.add_to_collection(collection, rating_keys)
+                    added = self.EmbyServer.add_to_collection(collection_name, rating_keys)
                     # Sammlung erstellen oder Medien hinzufügen
                     if not added:
-                        self.EmbyServer.create_collection(collection, rating_keys, locked=locked, parent_id= self.Emby.get("Id"))
+                        self.EmbyServer.create_collection(collection_name, rating_keys, locked=locked, parent_id= self.Emby.get("Id"))
                     self._invalidate_metadata_caches()
                 else:
                     # Tags entfernen und Sammlung löschen
                     for item in _items:
-                        self.EmbyServer.remove_tags(item.ratingKey, [collection])
+                        self.EmbyServer.remove_tags(item.ratingKey, self.get_collection_name_candidates(collection_name))
                     # self.EmbyServer.remove_boxset(collection, collection_id)
-                    self.EmbyServer.add_remove_plex_object_from_collection(collection, items, 'delete')
+                    self.EmbyServer.add_remove_plex_object_from_collection(collection_name, items, 'delete')
                     self._invalidate_metadata_caches()
 
         # for _items, locked in [(locked_items, True), (unlocked_items, False)]:
@@ -2981,15 +3091,13 @@ class Emby(Library):
                             emby_query_params['OfficialRatings'] = [value_decoded]
                         else:
                             emby_query_params['OfficialRatings'].append(value_decoded)
-                    elif key_decoded in ['label', 'show.label']:
+                    elif key_decoded in ['label', 'show.label', 'collection', 'show.collection', 'season.collection', 'episode.collection']:
                         # Handle multiple labels
-                        icon = '📺' if self.type == 'Show' else '🎥'
-                        name = self.name
-                        composed_name = f'{icon} {name} '
+                        display_value = self.get_collection_display_name(value_decoded)
                         if 'Tags' not in emby_query_params:
                             emby_query_params['Tags'] = []
-                        emby_query_params['Tags'].append(f'{composed_name}{value_decoded}')
-                        emby_query_params['Tags'].append(f'{value_decoded}')
+                        emby_query_params['Tags'].append(display_value)
+                        emby_query_params['Tags'].append(value_decoded)
                     elif key_decoded in ['actor', 'director', 'writer', 'producer', 'composer', 'show.actor']:
                         # Handle multiple persons
                         # item_types.add("Person")
@@ -3232,14 +3340,31 @@ class Emby(Library):
     def get_collection(self, data, force_search=False, debug=True):
         if isinstance(data, Collection):
             return data
-        elif isinstance(data, int) and not force_search:
+        elif isinstance(data, int):
             return self.fetchItem(data)
         else:
-            # lib_id = self.Emby.get("Id")
-            # my_cols = self.EmbyServer.get_boxsets_from_library(str(data), library_id=lib_id )
-            # my_col = self.EmbyServer.get_boxsets_from_library(str(data))
-            col_id= self.EmbyServer.get_collection_id(str(data))
-            if col_id:
+            display_name = self.get_collection_display_name(data)
+            base_name = self.get_collection_base_name(data)
+            display_id = self.EmbyServer.get_collection_id(display_name)
+            legacy_id = self.EmbyServer.get_collection_id(base_name) if base_name != display_name else None
+
+            if display_id and legacy_id and str(display_id) != str(legacy_id):
+                self._merge_legacy_collection(str(legacy_id), base_name, str(display_id), display_name)
+
+            col_id = display_id
+            found_name = display_name
+            if not col_id and legacy_id:
+                if self._is_kometa_managed_collection(legacy_id):
+                    if self._rename_legacy_collection(str(legacy_id), base_name, display_name):
+                        col_id = legacy_id
+                        found_name = display_name
+                else:
+                    logger.warning(f"Collection Migration: legacy collection {base_name} exists but is not tagged Kometa; leaving it untouched")
+
+            if not col_id:
+                col_id, found_name = self._get_collection_id_with_name(data)
+
+            if col_id and (found_name == display_name or str(found_name).startswith(self.collection_display_prefix())):
                 emby_col = self.EmbyServer.get_item(col_id)
                 return self.EmbyServer.convert_emby_to_plex([emby_col])[0]
 
@@ -3262,7 +3387,7 @@ class Emby(Library):
             raise Failed(f"Emby Error: Collection {data} not found")
 
     def get_collection_name_and_items(self, collection, smart_label_collection):
-        name = collection.title if isinstance(collection, (Collection, Playlist)) else str(collection)
+        name = collection.title if isinstance(collection, (Collection, Playlist)) else self.get_collection_display_name(collection)
         return name, self.get_collection_items(collection, smart_label_collection)
 
 
@@ -3392,7 +3517,7 @@ class Emby(Library):
             if hasattr(collection, 'ratingKey'):
                 my_collection = collection.ratingKey
             else:
-                my_collection:str = self.EmbyServer.get_collection_id(collection if isinstance(collection, str) else collection.title )
+                my_collection, _ = self._get_collection_id_with_name(collection if isinstance(collection, str) else collection.title)
             if my_collection:
                 return self.EmbyServer.get_items_in_boxset(my_collection)
             return []
@@ -3410,10 +3535,10 @@ class Emby(Library):
                 # my_return = self.query(collection.items)
                 return my_items
         elif isinstance(collection, str):
-            mycol = self.EmbyServer.get_collection_id(collection)
+            mycol, _ = self._get_collection_id_with_name(collection)
             if mycol:
                 my_items = self.EmbyServer.get_items_in_boxset(mycol)
-                return self.EmbyServer.convert_emby_to_plex(my_items)
+                return my_items
 
         return []
 
@@ -3490,9 +3615,9 @@ class Emby(Library):
     def item_reload(self, item):
         return self.reload(item)
     def notify(self, text, collection=None, critical=True):
-        pass
+        self.config.notify(text, server=self.server_name, library=self.name, collection=collection, critical=critical)
     def notify_delete(self, message):
-        pass
+        self.config.notify_delete(message, server=self.server_name, library=self.name)
 
 
     def reload(self, item, force=False):
@@ -3507,7 +3632,8 @@ class Emby(Library):
 
     def create_smart_collection(self, title, smart_type, uri_args, ignore_blank_results, minimum = None):
 
-        collection_id = self.EmbyServer.get_collection_id(title)
+        display_title = self.get_collection_display_name(title)
+        collection_id, _ = self._get_collection_id_with_name(title)
         if collection_id:
             return collection_id
 
@@ -3520,8 +3646,7 @@ class Emby(Library):
         if minimum and minimum > len(my_items):
             return None
 
-
-        return self.EmbyServer.create_smart_collection(title, smart_type, my_items, ignore_blank_results, self.Emby.get("Id"))
+        return self.EmbyServer.create_smart_collection(display_title, smart_type, my_items, ignore_blank_results, self.Emby.get("Id"))
         # print(f"{smart_type} - {uri_args}")
 
 

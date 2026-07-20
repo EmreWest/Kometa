@@ -84,33 +84,39 @@ def make_plex_item(
 
 class TestValidateImageSize:
     def test_returns_true_when_under_limit(self, tmp_path):
+        from PIL import Image
+
         plex = make_plex()
         path = tmp_path / "small.jpg"
-        path.write_bytes(b"a" * 100)
+        Image.new("RGB", (2, 2), color="red").save(path)
         assert plex.validate_image_size(SimpleNamespace(location=str(path), compare="abc")) is True
 
     def test_returns_false_when_over_limit(self, tmp_path, monkeypatch):
-        import modules.plex as plex_module
+        import modules.library as library_module
+        from PIL import Image
 
-        monkeypatch.setattr(plex_module, "MAX_IMAGE_SIZE", 50)
+        monkeypatch.setattr(library_module, "MAX_IMAGE_SIZE", 50)
         plex = make_plex()
         path = tmp_path / "large.jpg"
-        path.write_bytes(b"a" * 100)
+        Image.new("RGB", (10, 10), color="red").save(path)
         assert plex.validate_image_size(SimpleNamespace(location=str(path), compare="abc")) is False
 
-    def test_zero_byte_file_under_limit(self, tmp_path):
+    def test_zero_byte_file_is_rejected(self, tmp_path):
         plex = make_plex()
         path = tmp_path / "empty.jpg"
         path.write_bytes(b"")
-        assert plex.validate_image_size(SimpleNamespace(location=str(path), compare="abc")) is True
+        assert plex.validate_image_size(SimpleNamespace(location=str(path), compare="abc")) is False
 
     def test_exactly_at_limit(self, tmp_path, monkeypatch):
-        import modules.plex as plex_module
+        import os
 
-        monkeypatch.setattr(plex_module, "MAX_IMAGE_SIZE", 10)
+        import modules.library as library_module
+        from PIL import Image
+
         plex = make_plex()
         path = tmp_path / "exact.jpg"
-        path.write_bytes(b"1234567890")  # 10 bytes
+        Image.new("RGB", (2, 2), color="red").save(path)
+        monkeypatch.setattr(library_module, "MAX_IMAGE_SIZE", os.path.getsize(path))
         assert plex.validate_image_size(SimpleNamespace(location=str(path), compare="abc")) is False
 
 

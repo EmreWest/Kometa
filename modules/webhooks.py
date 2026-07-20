@@ -216,16 +216,18 @@ class Webhooks:
     def collection_hooks(self, webhooks, collection, poster_url=None, background_url=None, created=False, additions=None, removals=None, radarr=None, sonarr=None, playlist=False):
         if self.library:
             thumb = None
-            if not poster_url and collection.thumb and next((f for f in collection.fields if f.name == "thumb"), None):
+            fields = getattr(collection, "fields", []) or []
+            token = getattr(self.library, "token", None)
+            if token and not poster_url and getattr(collection, "thumb", None) and next((f for f in fields if f.name == "thumb"), None):
                 thumb = self.requests.get_image_encoded(f"{self.library.url}{collection.thumb}?X-Plex-Token={self.library.token}")
             art = None
-            if not playlist and not background_url and collection.art and next((f for f in collection.fields if f.name == "art"), None):
+            if token and not playlist and not background_url and getattr(collection, "art", None) and next((f for f in fields if f.name == "art"), None):
                 art = self.requests.get_image_encoded(f"{self.library.url}{collection.art}?X-Plex-Token={self.library.token}")
             self._request(
                 webhooks,
                 {
                     "event": "changes",
-                    "server_name": self.library.PlexServer.friendlyName,
+                    "server_name": self.library.server_name,
                     "library_name": self.library.name,
                     "playlist" if playlist else "collection": collection.title,
                     "created": created,

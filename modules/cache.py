@@ -680,6 +680,12 @@ class Cache:
                 cursor.execute("SELECT * FROM mal_data4 WHERE mal_id = ?", (mal_id,))
                 row = cursor.fetchone()
                 if row:
+                    if row["title"] == "__KOMETA_UNAVAILABLE__":
+                        mal_dict["unavailable"] = True
+                        datetime_object = datetime.strptime(row["expiration_date"], "%Y-%m-%d")
+                        time_between_insertion = datetime.now() - datetime_object
+                        expired = time_between_insertion.days > expiration
+                        return mal_dict, expired
                     mal_dict["title"] = row["title"]
                     mal_dict["title_english"] = row["title_english"] if row["title_english"] else None
                     mal_dict["title_japanese"] = row["title_japanese"] if row["title_japanese"] else None
@@ -699,6 +705,36 @@ class Cache:
                     time_between_insertion = datetime.now() - datetime_object
                     expired = time_between_insertion.days > expiration
         return mal_dict, expired
+
+    def update_mal_unavailable(self, expired, mal_id, expiration):
+        expiration_date = datetime.now() if expired is True else (datetime.now() - timedelta(days=random.randint(1, expiration)))
+        with sqlite3.connect(self.cache_path) as connection:
+            connection.row_factory = sqlite3.Row
+            with closing(connection.cursor()) as cursor:
+                cursor.execute("INSERT OR IGNORE INTO mal_data4(mal_id) VALUES(?)", (mal_id,))
+                cursor.execute(
+                    "UPDATE mal_data4 SET title = ?, title_english = ?, title_japanese = ?, status = ?, airing = ?, "
+                    "aired = ?, rating = ?, score = ?, rank = ?, popularity = ?, genres = ?, explicit_genres = ?, themes = ?, demographics = ?, studio = ?, expiration_date = ? WHERE mal_id = ?",
+                    (
+                        "__KOMETA_UNAVAILABLE__",
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        expiration_date.strftime("%Y-%m-%d"),
+                        mal_id,
+                    ),
+                )
 
     def update_mal(self, expired, mal_id, mal, expiration):
         expiration_date = datetime.now() if expired is True else (datetime.now() - timedelta(days=random.randint(1, expiration)))

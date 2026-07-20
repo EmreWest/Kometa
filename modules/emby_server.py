@@ -1311,13 +1311,12 @@ class EmbyServer:
 
         try:
             # item_ids = [str(item_id) for item_id in item_ids]
-            # Format the collection name for the API
-            collection_name = collection_name.replace('+', '%2B').replace('&', '%26')
+            encoded_collection_name = urllib.parse.quote(str(collection_name), safe="")
 
             # Create the collection with the first batch of items
             first_batch = item_ids[:100]  # Use the first 100 items for initial creation
             response = self.session.post(
-                f"{self.emby_server_url}/Collections?api_key={self.api_key}&IsLocked=true&ParentId={parent_id}&Name={collection_name}&Ids={self.__ids_to_str(first_batch)}"
+                f"{self.emby_server_url}/Collections?api_key={self.api_key}&IsLocked=true&ParentId={parent_id}&Name={encoded_collection_name}&Ids={self.__ids_to_str(first_batch)}"
             )
 
             if response.status_code != 200:
@@ -2321,16 +2320,18 @@ class EmbyServer:
             except (ValueError, TypeError):
                 pass
 
-        if "ForcedSortName" in data:
-            item["ForcedSortName"] = data["ForcedSortName"]
-            item["SortName"] = data["ForcedSortName"]
-
-            if "SortName" not in item["LockedFields"]:
-                item["LockedFields"].append("SortName")
-
+        sort_name_update = data.get("ForcedSortName")
         unchanged = all(item.get(k) == v for k, v in data.items())
+        if sort_name_update is not None:
+            unchanged = unchanged and item.get("SortName") == sort_name_update and "SortName" in item["LockedFields"]
         if unchanged:
             return None
+
+        if sort_name_update is not None:
+            item["ForcedSortName"] = sort_name_update
+            item["SortName"] = sort_name_update
+            if "SortName" not in item["LockedFields"]:
+                item["LockedFields"].append("SortName")
 
         item.update(data)
 

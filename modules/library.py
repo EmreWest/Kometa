@@ -12,6 +12,9 @@ from modules.util import Failed, NotScheduled
 
 logger = util.logger
 
+MAX_IMAGE_SIZE = 10480000  # a little less than 10MB
+SUPPORTED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP"}
+
 
 class Library(ABC):
     def __init__(self, config, params):
@@ -203,6 +206,90 @@ class Library(ABC):
     @property
     def is_emby(self):
         return self.mc_type == "emby"
+
+    @property
+    def server_name(self):
+        plex_server = getattr(self, "PlexServer", None)
+        if plex_server and getattr(plex_server, "friendlyName", None):
+            return plex_server.friendlyName
+        emby_server = getattr(self, "EmbyServer", None)
+        if emby_server and getattr(emby_server, "friendlyName", None):
+            return emby_server.friendlyName
+        return "Emby" if self.is_emby else "Plex"
+
+    def collection_display_prefix(self):
+        if not self.is_emby:
+            return ""
+        if getattr(self, "is_movie", False) or str(getattr(self, "type", "")).lower() == "movie":
+            emoji = "🎥"
+        elif getattr(self, "is_show", False) or str(getattr(self, "type", "")).lower() in ["show", "series"]:
+            emoji = "📺"
+        else:
+            return ""
+        return f"{emoji} {self.name} "
+
+    def get_collection_display_name(self, base_name, *, explicit_name=False, apply_prefix=True):
+        name = str(base_name)
+        if not apply_prefix:
+            return name
+        prefix = self.collection_display_prefix()
+        if not prefix or name.startswith(prefix):
+            return name
+        return f"{prefix}{name}"
+
+    def get_collection_base_name(self, display_name):
+        name = str(display_name)
+        prefix = self.collection_display_prefix()
+        if prefix and name.startswith(prefix):
+            return name[len(prefix):]
+        return name
+
+    def get_collection_name_candidates(self, base_name):
+        candidates = []
+        for name in [self.get_collection_display_name(base_name), str(base_name), self.get_collection_base_name(base_name)]:
+            if name not in candidates:
+                candidates.append(name)
+        return candidates
+
+    def validate_image_size(self, image):
+        if image is None:
+            logger.error("Image validation failed: no image data")
+            return False
+        if getattr(image, "is_url", False):
+            return True
+        location = getattr(image, "location", None)
+        if not location:
+            logger.error("Image validation failed: image location missing")
+            return False
+        if not os.path.isfile(location):
+            logger.error(f"Image validation failed: file not found: {location}")
+            return False
+        try:
+            image_size = os.path.getsize(location)
+        except OSError as err:
+            logger.error(f"Image validation failed: cannot read {location}: {err}")
+            return False
+        if image_size <= 0:
+            logger.error(f"Image validation failed: empty file: {location}")
+            return False
+        if image_size >= MAX_IMAGE_SIZE:
+            logger.error(f"Image too large: {location}, bytes {image_size}, MAX {MAX_IMAGE_SIZE}")
+            return False
+        try:
+            with Image.open(location) as opened_image:
+                width, height = opened_image.size
+                image_format = opened_image.format
+                opened_image.verify()
+        except Exception as err:
+            logger.error(f"Image validation failed: {location}: {err}")
+            return False
+        if not width or not height or width <= 0 or height <= 0:
+            logger.error(f"Image validation failed: invalid dimensions for {location}: {width}x{height}")
+            return False
+        if image_format not in SUPPORTED_IMAGE_FORMATS:
+            logger.error(f"Image validation failed: unsupported format for {location}: {image_format}")
+            return False
+        return True
 
     def item_is_ignored(self, item, tmdb_id=None, tvdb_id=None, imdb_id=None):
         if not self.ignore_ids and not self.ignore_imdb_ids:

@@ -1061,12 +1061,7 @@ class Plex(Library):
         return item_list
 
     def validate_image_size(self, image):
-        image_size = os.path.getsize(image.location)
-        if image_size < MAX_IMAGE_SIZE:
-            return True
-        else:
-            logger.error(f"Image too large: {image.location}, bytes {image_size}, MAX {MAX_IMAGE_SIZE}")
-            return False
+        return super().validate_image_size(image)
 
     @retry(stop=stop_after_attempt(6), wait=wait_fixed(10), retry=retry_if_not_exception_type((BadRequest, NotFound, Unauthorized)))
     def reload(self, item, force=False):

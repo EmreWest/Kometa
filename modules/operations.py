@@ -425,7 +425,10 @@ class Operations:
                             try:
                                 _mal_obj = self.config.MyAnimeList.get_anime(mal_id)
                             except Failed as err:
-                                logger.error(str(err))
+                                if self.config.MyAnimeList.is_unavailable_error(err):
+                                    self.config.MyAnimeList.warn_unavailable(mal_id)
+                                else:
+                                    logger.error(str(err))
                     if not _mal_obj:
                         raise Failed
                     return _mal_obj

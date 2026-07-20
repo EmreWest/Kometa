@@ -11,6 +11,12 @@ from modules.util import Failed, TimeoutExpired
 logger = util.logger
 
 builders = ["mal_id", "mal_all", "mal_airing", "mal_upcoming", "mal_tv", "mal_ova", "mal_movie", "mal_special", "mal_popular", "mal_favorite", "mal_season", "mal_suggested", "mal_userlist", "mal_genre", "mal_studio", "mal_search"]
+MAL_UNAVAILABLE_TITLE = "__KOMETA_UNAVAILABLE__"
+
+
+class MyAnimeListUnavailable(Failed):
+    pass
+
 mal_ranked_name = {"mal_all": "all", "mal_airing": "airing", "mal_upcoming": "upcoming", "mal_tv": "tv", "mal_ova": "ova", "mal_movie": "movie", "mal_special": "special", "mal_popular": "bypopularity", "mal_favorite": "favorite"}
 mal_ranked_pretty = {
     "mal_all": "MyAnimeList All",
@@ -112,6 +118,7 @@ class MyAnimeList:
         self.config_path = params["config_path"]
         self.expiration = params["cache_expiration"]
         self.authorization = params["authorization"]
+        self._unavailable_ids = set()
         logger.secret(self.client_secret)
         try:
             if not self._save(self.authorization):
@@ -299,9 +306,15 @@ class MyAnimeList:
         return mal_ids
 
     def get_anime(self, mal_id):
+        if mal_id in self._unavailable_ids or str(mal_id) in self._unavailable_ids:
+            raise MyAnimeListUnavailable(f"MyAnimeList Error: No Anime found for MyAnimeList ID: {mal_id}")
         expired = None
         if self.cache:
             mal_dict, expired = self.cache.query_mal(mal_id, self.expiration)
+            if mal_dict and mal_dict.get("unavailable") and expired is False:
+                self._unavailable_ids.add(mal_id)
+                self._unavailable_ids.add(str(mal_id))
+                raise MyAnimeListUnavailable(f"MyAnimeList Error: No Anime found for MyAnimeList ID: {mal_id}")
             if mal_dict and expired is False:
                 return MyAnimeListObj(self, mal_id, mal_dict, cache=True)
         try:
@@ -309,16 +322,32 @@ class MyAnimeList:
         except JSONDecodeError:
             raise Failed("MyAnimeList Error: JSON Decoding Failed")
         if "data" not in response:
-            raise Failed(f"MyAnimeList Error: No Anime found for MyAnimeList ID: {mal_id}")
+            self._unavailable_ids.add(mal_id)
+            self._unavailable_ids.add(str(mal_id))
+            if self.cache and hasattr(self.cache, "update_mal_unavailable"):
+                self.cache.update_mal_unavailable(expired, mal_id, self.expiration)
+            raise MyAnimeListUnavailable(f"MyAnimeList Error: No Anime found for MyAnimeList ID: {mal_id}")
         mal = MyAnimeListObj(self, mal_id, response["data"])
         if self.cache:
             self.cache.update_mal(expired, mal_id, mal, self.expiration)
         return mal
 
+    def is_unavailable_error(self, err):
+        return isinstance(err, MyAnimeListUnavailable) or str(err).startswith("MyAnimeList Error: No Anime found for MyAnimeList ID:")
+
+    def warn_unavailable(self, mal_id):
+        logger.warning(f"MyAnimeList Warning: Anime ID {mal_id} is unavailable and was skipped")
+
     def get_mal_ids(self, method, data):
         if method == "mal_id":
             logger.info(f"Processing MyAnimeList ID: {data}")
-            mal_ids = [data]
+            try:
+                self.get_anime(data)
+            except MyAnimeListUnavailable:
+                self.warn_unavailable(data)
+                mal_ids = []
+            else:
+                mal_ids = [data]
         elif method in mal_ranked_name:
             logger.info(f"Processing {mal_ranked_pretty[method]}: {data} Anime")
             mal_ids = self._ranked(mal_ranked_name[method], data)

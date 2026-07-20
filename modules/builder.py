@@ -5056,6 +5056,12 @@ class CollectionBuilder:
         logger.info("")
         logger.separator(f"Sorting {self.name} {self.Type}", space=False, border=False)
         logger.info("")
+        if self.library.is_emby:
+            logger.warning(
+                "Collection Warning: Custom member order is not supported by this Emby server; "
+                f"keeping the existing Emby order for {self.obj.title if self.obj else self.name}"
+            )
+            return
         if not isinstance(self.custom_sort, list):
             items = self.found_items
             if self.custom_sort == "custom.desc":

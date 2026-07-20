@@ -420,7 +420,13 @@ class Overlays:
                                                             except Failed as errr:
                                                                 raise MappingConvertError(f"Mapping/Convert Error:  {errr} of {item.title} (Guid: {item.guid})")
                                                         if mal_id:
-                                                            found_rating = self.config.MyAnimeList.get_anime(mal_id).score
+                                                            try:
+                                                                found_rating = self.config.MyAnimeList.get_anime(mal_id).score
+                                                            except Failed as err:
+                                                                if self.config.MyAnimeList.is_unavailable_error(err):
+                                                                    self.config.MyAnimeList.warn_unavailable(mal_id)
+                                                                else:
+                                                                    raise
                                                 elif str(format_var).startswith("plex"):
                                                     ratings = self.library.get_ratings(item)
                                                     rating_key = format_var.replace("_rating", "")
@@ -429,7 +435,10 @@ class Overlays:
                                                     except KeyError:
                                                         found_rating = None
                                             except Failed as err:
-                                                logger.error(err)
+                                                if self.config.MyAnimeList and self.config.MyAnimeList.is_unavailable_error(err):
+                                                    logger.warning(err)
+                                                else:
+                                                    logger.error(err)
                                             if found_rating:
                                                 actual_value = found_rating
                                                 logger.trace(f"{format_var}: {actual_value}")
