@@ -11,8 +11,6 @@ from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 
-from modules.logs import MyLogger
-
 code_base = os.path.dirname(os.path.abspath(__file__))
 default_dir = os.path.join(code_base, "config")
 
@@ -28,6 +26,13 @@ def log_startup_error(message, error=None):
                 traceback.print_exception(type(error), error, error.__traceback__, file=startup_log)
     except Exception:
         pass
+
+
+try:
+    from modules.logs import MyLogger
+except Exception as e:
+    log_startup_error("Startup Import Error: failed to import modules.logs.", e)
+    raise
 
 # Increase file descriptor limit to prevent exhaustion with large libraries.
 # The `resource` module is POSIX-only; on Windows the OS manages FD limits
