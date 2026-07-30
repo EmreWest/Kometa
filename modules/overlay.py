@@ -78,11 +78,10 @@ types_for_var = {
     "movie_show_season": ["original_title", "trakt_user_rating"],
     "show_season_artist_album": ["total_runtime"],
     "movie_show_episode": ["audience_rating", "content_rating"],
-    "movie_show": ["anidb_average_rating", "anidb_rating", "anidb_score_rating", "mal_rating"],
+    "movie_show": ["anidb_average_rating", "anidb_rating", "anidb_score_rating", "mal_rating", "edition"],
     "movie_episode": ["bitrate", "versions"],
     "season_episode": ["season_number", "show_title"],
     "show_season": ["episode_count"],
-    "movie": ["edition"],
     "episode": ["episode_number", "season_title"],
 }
 var_mods = {
@@ -213,55 +212,8 @@ class Overlay:
         if self.name != "backdrop" and self.has_back and not self.has_coordinates() and not self.queue_name:
             raise OverlayError("Overlay Error: Overlay attributes 'horizontal_offset' and 'vertical_offset' are required when using 'backdrop'")
 
-        def get_and_save_image(image_url):
-            response = self.requests.get(image_url)
-            if response.status_code == 404:
-                raise OverlayError(f"Overlay Error: Overlay Image not found at '{image_url}'")
-            if response.status_code >= 400:
-                raise OverlayError(f"Overlay Error: Response code {response.status_code} received when attempting download of '{image_url}'")
-            if "Content-Type" not in response.headers or response.headers["Content-Type"] != "image/png":
-                raise OverlayError(f"Overlay Error: Overlay image '{image_url}' is not a PNG filetype ")
-            if not os.path.exists(library.overlay_folder) or not os.path.isdir(library.overlay_folder):
-                os.makedirs(library.overlay_folder, exist_ok=False)
-                logger.info(f"Creating Overlay Folder found at: {library.overlay_folder}")
-            clean_image_name, _ = util.validate_filename(self.name)
-            image_path = os.path.join(library.overlay_folder, f"{clean_image_name}.png")
-            if os.path.exists(image_path):
-                os.remove(image_path)
-            with open(image_path, "wb") as handler:
-                handler.write(response.content)
-            # Wait for file to be unlocked (up to 10 seconds)
-            timeout = 10
-            elapsed = 0
-            while util.is_locked(image_path) and elapsed < timeout:
-                time.sleep(0.1)
-                elapsed += 0.1
-            return image_path
-
         if not self.name.startswith(("blur", "backdrop")):
-            if ("default" in self.data and self.data["default"]) or ("pmm" in self.data and self.data["pmm"]) or ("git" in self.data and self.data["git"] and self.data["git"].startswith("PMM/")):
-                if "default" in self.data and self.data["default"]:
-                    temp_path = self.data["default"]
-                elif "pmm" in self.data and self.data["pmm"]:
-                    temp_path = self.data["pmm"]
-                else:
-                    temp_path = self.data["git"][4:]
-                if temp_path.startswith("overlays/images/"):
-                    temp_path = temp_path[16:]
-                if not temp_path.endswith(".png"):
-                    temp_path = f"{temp_path}.png"
-                images_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "defaults", "overlays", "images")
-                if not os.path.exists(os.path.abspath(os.path.join(images_path, temp_path))):
-                    raise OverlayError(f"Overlay Error: Overlay image not found at '{os.path.abspath(os.path.join(images_path, temp_path))}'")
-                self.path = os.path.abspath(os.path.join(images_path, temp_path))
-            elif "file" in self.data and self.data["file"]:
-                self.path = self.data["file"]
-            elif "git" in self.data and self.data["git"]:
-                self.path = get_and_save_image(f"{self.config.GitHub.configs_url}{self.data['git']}.png")
-            elif "repo" in self.data and self.data["repo"]:
-                self.path = get_and_save_image(f"{self.config.custom_repo}{self.data['repo']}.png")
-            elif "url" in self.data and self.data["url"]:
-                self.path = get_and_save_image(self.data["url"])
+            self.path = self._resolve_image_path()
 
         if "|" in self.name:
             raise OverlayError(f"Overlay Error: Overlay name '{self.name}' cannot contain the '|' character")
@@ -284,7 +236,7 @@ class Overlay:
                 self.addon_position = util.parse("Overlay", "addon_position", self.data["addon_position"], parent="overlay", options=["left", "right", "top", "bottom"]) if "addon_position" in self.data else "left"
                 image_compare = None
                 if self.cache:
-                    _, image_compare, _ = self.cache.query_image_map(self.mapping_name, f"{self.library.image_table_name}_overlays")
+                    image_compare = self.cache.query_overlay_image(self.mapping_name, f"{self.library.image_table_name}_overlay_images")
                 overlay_size = os.stat(self.path).st_size
                 self.updated = not image_compare or str(overlay_size) != str(image_compare)
                 try:
@@ -293,8 +245,8 @@ class Overlay:
                         self.image = img.convert("RGBA")
                         if self.scale_width or self.scale_height:
                             base_width, base_height = self.image.size
-                            width = (int(base_width * int(self.scale_width[:-1]) / 100) if str(self.scale_width)[-1] == "%" else self.scale_width) if self.scale_width else None
-                            height = (int(base_height * int(self.scale_height[:-1]) / 100) if str(self.scale_height)[-1] == "%" else self.scale_height) if self.scale_height else None
+                            width = (int(base_width * int(str(self.scale_width)[:-1]) / 100) if str(self.scale_width)[-1] == "%" else self.scale_width) if self.scale_width else None
+                            height = (int(base_height * int(str(self.scale_height)[:-1]) / 100) if str(self.scale_height)[-1] == "%" else self.scale_height) if self.scale_height else None
                             if height and not width:
                                 width = int(base_width * height / base_height)
                             if width and not height:
@@ -303,7 +255,7 @@ class Overlay:
                         # Force image data to be loaded into memory before context closes
                         self.image.load()
                     if self.cache:
-                        self.cache.update_image_map(self.mapping_name, f"{self.library.image_table_name}_overlays", self.name, overlay_size)
+                        self.cache.update_overlay_image(self.mapping_name, f"{self.library.image_table_name}_overlay_images", overlay_size)
                 except OSError:
                     raise OverlayError(f"Overlay Error: Overlay image '{self.path}' failed to load")
             match = re.search("\\((.+)\\)", self.name)
@@ -381,7 +333,7 @@ class Overlay:
                 raise OverlayError(f"Overlay Error: Overlay image not found at '{self.path}'")
             image_compare = None
             if self.cache:
-                _, image_compare, _ = self.cache.query_image_map(self.mapping_name, f"{self.library.image_table_name}_overlays")
+                image_compare = self.cache.query_overlay_image(self.mapping_name, f"{self.library.image_table_name}_overlay_images")
             overlay_size = os.stat(self.path).st_size
             self.updated = not image_compare or str(overlay_size) != str(image_compare)
             try:
@@ -390,8 +342,8 @@ class Overlay:
                     self.image = img.convert("RGBA")
                     if self.scale_width or self.scale_height:
                         base_width, base_height = self.image.size
-                        width = (int(base_width * int(self.scale_width[:-1]) / 100) if str(self.scale_width)[-1] == "%" else self.scale_width) if self.scale_width else None
-                        height = (int(base_height * int(self.scale_height[:-1]) / 100) if str(self.scale_height)[-1] == "%" else self.scale_height) if self.scale_height else None
+                        width = (int(base_width * int(str(self.scale_width)[:-1]) / 100) if str(self.scale_width)[-1] == "%" else self.scale_width) if self.scale_width else None
+                        height = (int(base_height * int(str(self.scale_height)[:-1]) / 100) if str(self.scale_height)[-1] == "%" else self.scale_height) if self.scale_height else None
                         if height and not width:
                             width = int(base_width * height / base_height)
                         if width and not height:
@@ -402,9 +354,70 @@ class Overlay:
                     # Force image data to be loaded into memory before context closes
                     self.image.load()
                 if self.cache:
-                    self.cache.update_image_map(self.mapping_name, f"{self.library.image_table_name}_overlays", self.mapping_name, overlay_size)
+                    self.cache.update_overlay_image(self.mapping_name, f"{self.library.image_table_name}_overlay_images", overlay_size)
             except OSError:
                 raise OverlayError(f"Overlay Error: Overlay image '{self.path}' failed to load")
+
+    def _resolve_image_path(self):
+        """Resolve which image asset backs this overlay.
+
+        A user-supplied override (`file`, `git`, `repo`, or `url`) always wins. Only fall back to
+        a built-in asset (`default`, `pmm`, or a PMM-prefixed `git` reference) when the user hasn't
+        supplied one of their own -- otherwise a built-in default with a resolvable asset (e.g. the
+        Critic/Audience/User rating icons) would silently override a custom `file:` image.
+        """
+
+        def get_and_save_image(image_url):
+            response = self.requests.get(image_url)
+            if response.status_code == 404:
+                raise OverlayError(f"Overlay Error: Overlay Image not found at '{image_url}'")
+            if response.status_code >= 400:
+                raise OverlayError(f"Overlay Error: Response code {response.status_code} received when attempting download of '{image_url}'")
+            if "Content-Type" not in response.headers or response.headers["Content-Type"] != "image/png":
+                raise OverlayError(f"Overlay Error: Overlay image '{image_url}' is not a PNG filetype ")
+            if not os.path.exists(self.library.overlay_folder) or not os.path.isdir(self.library.overlay_folder):
+                os.makedirs(self.library.overlay_folder, exist_ok=False)
+                logger.info(f"Creating Overlay Folder found at: {self.library.overlay_folder}")
+            clean_image_name, _ = util.validate_filename(self.name)
+            image_path = os.path.join(self.library.overlay_folder, f"{clean_image_name}.png")
+            if os.path.exists(image_path):
+                os.remove(image_path)
+            with open(image_path, "wb") as handler:
+                handler.write(response.content)
+            # Wait for file to be unlocked (up to 10 seconds)
+            timeout = 10
+            elapsed = 0
+            while util.is_locked(image_path) and elapsed < timeout:
+                time.sleep(0.1)
+                elapsed += 0.1
+            return image_path
+
+        has_file = "file" in self.data and self.data["file"]
+        has_builtin = ("default" in self.data and self.data["default"]) or ("pmm" in self.data and self.data["pmm"]) or ("git" in self.data and self.data["git"] and self.data["git"].startswith("PMM/"))
+        if not has_file and has_builtin:
+            if "default" in self.data and self.data["default"]:
+                temp_path = self.data["default"]
+            elif "pmm" in self.data and self.data["pmm"]:
+                temp_path = self.data["pmm"]
+            else:
+                temp_path = self.data["git"][4:]
+            if temp_path.startswith("overlays/images/"):
+                temp_path = temp_path[16:]
+            if not temp_path.endswith(".png"):
+                temp_path = f"{temp_path}.png"
+            images_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "defaults", "overlays", "images")
+            if not os.path.exists(os.path.abspath(os.path.join(images_path, temp_path))):
+                raise OverlayError(f"Overlay Error: Overlay image not found at '{os.path.abspath(os.path.join(images_path, temp_path))}'")
+            return os.path.abspath(os.path.join(images_path, temp_path))
+        elif has_file:
+            return self.data["file"]
+        elif "git" in self.data and self.data["git"]:
+            return get_and_save_image(f"{self.config.GitHub.configs_url}{self.data['git']}.png")
+        elif "repo" in self.data and self.data["repo"]:
+            return get_and_save_image(f"{self.config.custom_repo}{self.data['repo']}.png")
+        elif "url" in self.data and self.data["url"]:
+            return get_and_save_image(self.data["url"])
+        return None
 
     def get_backdrop(self, canvas_box, box=None, text=None, new_cords=None):
         overlay_image = None
@@ -414,12 +427,12 @@ class Overlay:
         if text is not None:
             _, _, text_width, text_height = self.get_text_size(text)
             if image_width is not None and self.addon_position in ["left", "right"]:
-                box = (text_width + image_width + self.addon_offset, text_height if text_height > image_height else image_height)
+                box = (text_width + image_width + self.addon_offset, text_height if text_height > image_height else image_height)  # type: ignore[operator]
             elif image_width is not None:
-                box = (text_width if text_width > image_width else image_width, text_height + image_height + self.addon_offset)
+                box = (text_width if text_width > image_width else image_width, text_height + image_height + self.addon_offset)  # type: ignore[operator]
             else:
                 box = (text_width, text_height)
-        box_width, box_height = box
+        box_width, box_height = box  # type: ignore[misc]
         back_width, back_height = self.back_box if self.back_box else (None, None)
         if back_width == -1:
             back_width = canvas_box[0] if self.name == "backdrop" else box_width
@@ -432,17 +445,22 @@ class Overlay:
             overlay_image = Image.new("RGBA", canvas_box, (255, 255, 255, 0))
             drawing = ImageDraw.Draw(overlay_image)
             if self.has_back:
-                cords = (start_x - self.back_padding, start_y - self.back_padding, start_x + (back_width if self.back_box else box_width) + self.back_padding, start_y + (back_height if self.back_box else box_height) + self.back_padding)
+                cords = (
+                    start_x - self.back_padding,
+                    start_y - self.back_padding,
+                    start_x + (back_width if self.back_box else box_width) + self.back_padding,  # type: ignore[operator]
+                    start_y + (back_height if self.back_box else box_height) + self.back_padding,  # type: ignore[operator]
+                )
                 if self.back_radius:
-                    drawing.rounded_rectangle(cords, fill=self.back_color, outline=self.back_line_color, width=self.back_line_width, radius=self.back_radius)
+                    drawing.rounded_rectangle(cords, fill=self.back_color, outline=self.back_line_color, width=self.back_line_width, radius=self.back_radius)  # type: ignore[arg-type]
                 else:
-                    drawing.rectangle(cords, fill=self.back_color, outline=self.back_line_color, width=self.back_line_width)
+                    drawing.rectangle(cords, fill=self.back_color, outline=self.back_line_color, width=self.back_line_width)  # type: ignore[arg-type]
 
             if self.back_box:
                 if self.back_align in ["left", "right", "center", "bottom"]:
-                    main_y = start_y + (back_height - box_height) // (1 if self.back_align == "bottom" else 2)
+                    main_y = start_y + (back_height - box_height) // (1 if self.back_align == "bottom" else 2)  # type: ignore[operator]
                 if self.back_align in ["top", "bottom", "center", "right"]:
-                    main_x = start_x + (back_width - box_width) // (1 if self.back_align == "right" else 2)
+                    main_x = start_x + (back_width - box_width) // (1 if self.back_align == "right" else 2)  # type: ignore[operator]
 
             addon_x = None
             addon_y = None
@@ -450,29 +468,29 @@ class Overlay:
                 addon_x = main_x
                 addon_y = main_y
                 if self.addon_position == "left":
-                    main_x = main_x + image_width + self.addon_offset
+                    main_x = main_x + image_width + self.addon_offset  # type: ignore[operator]
                 elif self.addon_position == "right":
-                    addon_x = main_x + text_width + self.addon_offset
+                    addon_x = main_x + text_width + self.addon_offset  # type: ignore[operator]
                 elif text_width < image_width:
-                    main_x = main_x + ((image_width - text_width) / 2)
+                    main_x = main_x + ((image_width - text_width) / 2)  # type: ignore[operator]
                 elif text_width > image_width:
-                    addon_x = main_x + ((text_width - image_width) / 2)
+                    addon_x = main_x + ((text_width - image_width) / 2)  # type: ignore[operator]
 
                 if self.addon_position == "top":
-                    main_y = main_y + image_height + self.addon_offset
+                    main_y = main_y + image_height + self.addon_offset  # type: ignore[operator]
                 elif self.addon_position == "bottom":
-                    addon_y = main_y + text_height + self.addon_offset
-                elif text_height < image_height:
-                    main_y = main_y + ((image_height - text_height) / 2)
-                elif text_height > image_height:
-                    addon_y = main_y + ((text_height - image_height) / 2)
+                    addon_y = main_y + text_height + self.addon_offset  # type: ignore[operator]
+                elif text_height < image_height:  # type: ignore[operator]
+                    main_y = main_y + ((image_height - text_height) / 2)  # type: ignore[operator]
+                elif text_height > image_height:  # type: ignore[operator]
+                    addon_y = main_y + ((text_height - image_height) / 2)  # type: ignore[operator]
 
             if text is not None:
                 drawing.text((int(main_x), int(main_y)), text, font=self.font, fill=self.font_color, stroke_fill=self.stroke_color, stroke_width=self.stroke_width, anchor="lt")
             if addon_x is not None:
                 main_x = addon_x
                 main_y = addon_y
-        return overlay_image, (int(main_x), int(main_y))
+        return overlay_image, (int(main_x), int(main_y))  # type: ignore[arg-type]
 
     def get_overlay_compare(self):
         output = f"{self.name}"

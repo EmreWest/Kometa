@@ -10,7 +10,7 @@ dependencies = [
     "babel>=2.18.0",
     "cloudscraper==1.2.71",
     "colorama>=0.4.6",
-    "gitpython==3.1.50",
+    "gitpython==3.1.54",
     "jsonschema==4.26.0",
     "jinja2>=3.1.6",
     "letterboxdpy==6.5.7",
@@ -29,7 +29,7 @@ dependencies = [
     "packaging==26.2",
     "paginate>=0.5.7",
     "pathvalidate==3.3.1",
-    "pillow==12.2.0",
+    "pillow==12.3.0",
     "plexapi==4.18.1",
     "psutil==7.2.2",
     "pygments>=2.20.0",
@@ -41,7 +41,7 @@ dependencies = [
     "requests==2.34.2",
     "ruamel-yaml==0.19.1",
     "schedule==1.2.2",
-    "setuptools==82.0.1",
+    "setuptools==83.0.0",
     "tenacity==9.1.4",
     "tmdbapis==1.2.30",
 ]
@@ -77,6 +77,53 @@ line_length = 256
 exclude_dirs = ["tests", "config", ".venv", "test_venv", ".direnv"]
 skips = ["B101"]
 
+[tool.pyright]
+# Static type checker (replaces mypy as of this PR).
+#
+# Strategy: ratcheting baseline. We do NOT require zero errors. We require
+# that the error count does not GO UP on a PR. See:
+#   - .pyright-baseline.json (current accepted error count)
+#   - scripts/pyright_baseline.py (gate logic)
+#   - .github/workflows/pyright.yml (CI job)
+#
+# To opt a single file into stricter checking, add this line at the top:
+#   # pyright: strict
+#
+# To silence a single line (use sparingly!):
+#   foo.bar  # pyright: ignore[reportOptionalMemberAccess]
+include = ["modules", "kometa.py"]
+stubPath = "stubs"
+exclude = [
+    "**/__pycache__",
+    "**/.*",
+    ".venv",
+    "test_venv",
+    ".direnv",
+    "build",
+    "dist",
+    "docs",
+    "config",
+    "defaults",
+    "fonts",
+    "json-schema",
+    "tests",
+]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+
+# Third-party packages without type stubs would otherwise generate hundreds
+# of false positives. We silence those globally; real errors still surface.
+reportMissingImports = "none"
+reportMissingTypeStubs = "none"
+
+# Allow gradual typing — don't punish code that simply isn't annotated yet.
+reportUnknownArgumentType = "none"
+reportUnknownLambdaType = "none"
+reportUnknownMemberType = "none"
+reportUnknownParameterType = "none"
+reportUnknownVariableType = "none"
+
+
 [tool.uv.sources]
 mkdocs-include-markdown-plugin = { git = "https://github.com/Kometa-Team/mkdocs-include-markdown-plugin", rev = "master" }
 
@@ -84,13 +131,13 @@ mkdocs-include-markdown-plugin = { git = "https://github.com/Kometa-Team/mkdocs-
 dev = [
     "arrapi==1.4.14",
     "cloudscraper==1.2.71",
-    "gitpython==3.1.50",
+    "gitpython==3.1.54",
     "letterboxdpy==6.5.7",
     "lxml==6.1.1",
     "num2words==0.5.14",
     "packaging==26.2",
     "pathvalidate==3.3.1",
-    "pillow==12.2.0",
+    "pillow==12.3.0",
     "plexapi==4.18.1",
     "psutil==7.2.2",
     "pytest==9.1.1",
@@ -103,7 +150,7 @@ dev = [
     "requests==2.34.2",
     "ruamel-yaml==0.19.1",
     "schedule==1.2.2",
-    "setuptools==82.0.1",
+    "setuptools==83.0.0",
     "tenacity==9.1.4",
     "tmdbapis==1.2.30",
 ]

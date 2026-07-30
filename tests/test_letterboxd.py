@@ -4,6 +4,7 @@ from lxml import html
 
 import modules.letterboxd as letterboxd_module
 from modules.letterboxd import Letterboxd
+from modules.util import Failed
 
 
 class FakeLogger:
@@ -377,6 +378,85 @@ def test_validate_global_letterboxd_films_page_samples_single_item(adapter):
     assert FakeFilms.calls == [("https://letterboxd.com/films/popular/", 1)]
 
 
+@pytest.mark.parametrize(
+    ("method", "data", "expected_url"),
+    [
+        ("letterboxd_crew", {"role": "actor", "person": "marlon-brando"}, "https://letterboxd.com/actor/marlon-brando/"),
+        ("letterboxd_crew", {"role": "director", "person": "francis-ford-coppola"}, "https://letterboxd.com/director/francis-ford-coppola/"),
+        ("letterboxd_crew", {"role": "writer", "person": "mario-puzo"}, "https://letterboxd.com/writer/mario-puzo/"),
+        ("letterboxd_crew", {"role": "casting", "person": "fred-roos"}, "https://letterboxd.com/casting/fred-roos/"),
+        ("letterboxd_crew", {"role": "editor", "person": "william-reynolds-1"}, "https://letterboxd.com/editor/william-reynolds-1/"),
+        ("letterboxd_crew", {"role": "cinematography", "person": "gordon-willis"}, "https://letterboxd.com/cinematography/gordon-willis/"),
+        ("letterboxd_crew", {"role": "composer", "person": "nino-rota"}, "https://letterboxd.com/composer/nino-rota/"),
+        ("letterboxd_studio", {"studio": "a24", "sort_by": "release_date_newest"}, "https://letterboxd.com/studio/a24/by/release/"),
+        ("letterboxd_country", {"country": "usa", "limit": 10}, "https://letterboxd.com/films/country/usa/"),
+        ("letterboxd_language", {"language": "english", "limit": 10}, "https://letterboxd.com/films/language/english/"),
+        ("letterboxd_genre", {"genre": "crime", "limit": 20}, "https://letterboxd.com/films/genre/crime/"),
+        ("letterboxd_theme", {"theme": "crime-drugs-and-gangsters", "sort_by": "best_match", "limit": 20}, "https://letterboxd.com/films/theme/crime-drugs-and-gangsters/by/best-match/"),
+        ("letterboxd_similar", "the-godfather", "https://letterboxd.com/film/the-godfather/similar/"),
+        ("letterboxd_collection", {"collection": "beetlejuice-collection-2", "sort_by": "release_date_earliest"}, "https://letterboxd.com/films/in/beetlejuice-collection-2/by/release-earliest/"),
+    ],
+)
+def test_semantic_builders_normalize_reported_letterboxd_pages(adapter, method, data, expected_url):
+    calls = []
+    adapter._get_list_items = lambda url, limit, language: calls.append((url, limit, language)) or []
+
+    lists = adapter.validate_letterboxd_builder("Collection", method, data, "en")
+
+    assert lists[0]["url"] == expected_url
+    assert lists[0]["limit"] == (data.get("limit", 0) if isinstance(data, dict) else 0)
+    assert calls == [(expected_url, 1, "en")]
+
+
+def test_semantic_builder_rejects_url_instead_of_slug(adapter):
+    with pytest.raises(Failed, match="must be a Letterboxd slug"):
+        adapter.validate_letterboxd_builder("Collection", "letterboxd_genre", "https://letterboxd.com/films/genre/crime/", "en")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://letterboxd.com/studio/a24/by/release/",
+        "https://letterboxd.com/actor/marlon-brando/",
+        "https://letterboxd.com/director/francis-ford-coppola/",
+        "https://letterboxd.com/writer/mario-puzo/",
+        "https://letterboxd.com/casting/fred-roos/",
+        "https://letterboxd.com/editor/william-reynolds-1/",
+        "https://letterboxd.com/cinematography/gordon-willis/",
+        "https://letterboxd.com/composer/nino-rota/",
+    ],
+)
+def test_filmography_urls_use_fallback_parser(monkeypatch, patch_logger, url):
+    monkeypatch.setattr(letterboxd_module, "Films", FakeFilms)
+    FakeFilms.calls = []
+    requests = FakeRequests({url: """
+                <html><body>
+                    <div class="react-component poster" data-item-link="/film/the-godfather/" data-item-name="The Godfather (1972)" data-postered-identifier="{&quot;uid&quot;:&quot;film:51818&quot;}"></div>
+                </body></html>
+            """})
+    adapter = Letterboxd(requests, FakeCache())
+
+    items = adapter._get_list_items(url, 0, "en")
+
+    assert items == [("51818", "/film/the-godfather/", 1972, None, None)]
+    assert FakeFilms.calls == []
+    assert any("using Kometa fallback parsing" in message for message in patch_logger.warning_messages)
+
+
+def test_similar_url_uses_letterboxdpy_films(adapter):
+    url = "https://letterboxd.com/film/the-godfather/similar/"
+    FakeFilms.payloads = {
+        url: {
+            "51816": {"slug": "the-godfather-part-ii", "year": 1974, "rating": 4.6, "url": "https://letterboxd.com/film/the-godfather-part-ii/"},
+        }
+    }
+
+    items = adapter._get_list_items(url, 0, "en")
+
+    assert items == [("51816", "/film/the-godfather-part-ii/", 1974, None, 9)]
+    assert FakeFilms.calls == [(url, None)]
+
+
 def test_user_scoped_films_url_uses_fallback_not_letterboxdpy(monkeypatch, patch_logger):
     monkeypatch.setattr(letterboxd_module, "Films", FakeFilms)
     monkeypatch.setattr(letterboxd_module, "LetterboxdList", FakeList)
@@ -400,7 +480,7 @@ def test_user_scoped_films_url_uses_fallback_not_letterboxdpy(monkeypatch, patch
 
     assert items == [("501", "/film/half-star-one/", 1999, None, 1)]
     assert FakeFilms.calls == []
-    assert any("user-scoped films URLs" in message for message in patch_logger.warning_messages)
+    assert any("using Kometa fallback parsing" in message for message in patch_logger.warning_messages)
 
 
 def test_user_scoped_films_fallback_extracts_direct_react_components(monkeypatch):
@@ -606,3 +686,34 @@ def test_user_films_fallback_extracts_watched_entries(monkeypatch, patch_logger)
 
     assert items == [("333", "/film/film-fallback/", 2021, None, 8, None)]
     assert any("using Kometa fallback parsing" in message for message in patch_logger.warning_messages)
+
+
+class TestResolveBoxdUrl:
+    def test_rejects_non_http_scheme(self, monkeypatch):
+        """A boxd.it URL with a non-http(s) scheme must fail before any network call."""
+        from modules.util import Failed
+
+        def no_network(*args, **kwargs):
+            raise AssertionError("network should not be hit")
+
+        monkeypatch.setattr(letterboxd_module, "urlopen", no_network)
+        with pytest.raises(Failed, match="scheme"):
+            Letterboxd._resolve_boxd_url("ftp://boxd.it/abc123")
+
+    def test_resolves_https_short_url(self, monkeypatch):
+        class FakeResponse:
+            def geturl(self):
+                return "https://letterboxd.com/user/list/foo/"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(letterboxd_module, "urlopen", lambda *args, **kwargs: FakeResponse())
+        assert Letterboxd._resolve_boxd_url("https://boxd.it/abc") == "https://letterboxd.com/user/list/foo/"
+
+    def test_non_boxd_url_passes_through(self):
+        url = "https://letterboxd.com/user/list/foo/"
+        assert Letterboxd._resolve_boxd_url(url) == url

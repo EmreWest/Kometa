@@ -123,6 +123,8 @@ class Library(ABC):
         self.mass_imdb_parental_labels = params["mass_imdb_parental_labels"]
         self.mass_poster_update = params["mass_poster_update"]
         self.mass_background_update = params["mass_background_update"]
+        self.mass_logo_update = params["mass_logo_update"]
+        self.mass_square_art_update = params["mass_square_art_update"]
         self.radarr_add_all_existing = params["radarr_add_all_existing"]
         self.radarr_remove_by_tag = params["radarr_remove_by_tag"]
         self.sonarr_add_all_existing = params["sonarr_add_all_existing"]
@@ -177,6 +179,8 @@ class Library(ABC):
             or self.sonarr_add_all_existing
             or self.mass_poster_update
             or self.mass_background_update
+            or self.mass_logo_update
+            or self.mass_square_art_update
             else False
         )
         self.library_operation = (
@@ -448,11 +452,11 @@ class Library(ABC):
             if poster_uploaded:
                 self.config.Cache.update_image_map(item.ratingKey, self.image_table_name, "", poster.compare if poster else "")
             if background_uploaded:
-                self.config.Cache.update_image_map(item.ratingKey, f"{self.image_table_name}_backgrounds", "", background.compare)
+                self.config.Cache.update_image_map(item.ratingKey, f"{self.image_table_name}_backgrounds", "", background.compare if background else "")
             if logo_uploaded:
-                self.config.Cache.update_image_map(item.ratingKey, f"{self.image_table_name}_logos", "", logo.compare)
+                self.config.Cache.update_image_map(item.ratingKey, f"{self.image_table_name}_logos", "", logo.compare if logo else "")
             if square_art_uploaded:
-                self.config.Cache.update_image_map(item.ratingKey, f"{self.image_table_name}_square_arts", "", square_art.compare)
+                self.config.Cache.update_image_map(item.ratingKey, f"{self.image_table_name}_square_arts", "", square_art.compare if square_art else "")
 
         return poster_uploaded, background_uploaded, logo_uploaded, square_art_uploaded
 
@@ -513,8 +517,14 @@ class Library(ABC):
     def background_update(self, item, image, tmdb=None, title=None):
         return self.image_update(item, image, tmdb=tmdb, title=title, poster=False)
 
+    def logo_update(self, item, image, tmdb=None, title=None):
+        return self.image_update(item, image, tmdb=tmdb, title=title, poster=False, image_type="logo")
+
+    def square_art_update(self, item, image, tmdb=None, title=None):
+        return self.image_update(item, image, tmdb=tmdb, title=title, poster=False, image_type="square_art")
+
     @abstractmethod
-    def image_update(self, item, image, tmdb=None, title=None, poster=True):
+    def image_update(self, item, image, tmdb=None, title=None, poster=True, image_type=None):
         pass
 
     def pick_image(self, title, images, prioritize_assets, download_url_assets, item_dir, image_type="poster", image_name=None):
@@ -580,8 +590,7 @@ class Library(ABC):
         pass
 
     @abstractmethod
-    def item_labels(self, item):
-        pass
+    def item_labels(self, item) -> list: ...
 
     @abstractmethod
     def find_poster_url(self, item):
@@ -613,8 +622,10 @@ class Library(ABC):
         return None
 
     @abstractmethod
-    def get_all(self, builder_level=None, load=False):
-        pass
+    def get_all(self, builder_level=None, load=False) -> list: ...
+
+    @abstractmethod
+    def get_ids(self, item) -> tuple: ...
 
     def add_additions(self, collection, items, is_movie):
         self._add_to_file("Added", collection, items, is_movie)

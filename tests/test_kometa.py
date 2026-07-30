@@ -10,6 +10,7 @@ other test had a chance to fire.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +20,21 @@ KOMETA_PY = REPO_ROOT / "kometa.py"
 def _module_ast() -> ast.Module:
     """Parse kometa.py once and return its AST."""
     return ast.parse(KOMETA_PY.read_text(encoding="utf-8"))
+
+
+def _summary_log_groups() -> list[tuple[str, str]]:
+    """Extract the summary grouping rules without importing kometa.py."""
+    for node in ast.walk(_module_ast()):
+        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "summary_log_groups" for target in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError("summary_log_groups was not found in kometa.py")
+
+
+def _summarize_log_message(message: str) -> str:
+    for pattern, replacement in _summary_log_groups():
+        if re.match(pattern, message):
+            return replacement
+    return message
 
 
 def test_issue_3244_resource_import_is_guarded() -> None:
@@ -108,3 +124,89 @@ def test_issue_3244_resource_uses_are_guarded() -> None:
     for use_line in resource_uses:
         inside_guard = any(start <= use_line <= end for start, end in guarded_ranges)
         assert inside_guard, f"`resource.<attr>` at kometa.py:{use_line} is not inside an `if resource is not None:` block. " f"On Windows `resource` is `None`, so this will raise AttributeError. See PR #3244."
+
+
+def test_overlay_summary_uses_warning_labeling() -> None:
+    """Regression for overlay missing-rating summaries.
+
+    The summary should consistently label these as warnings rather than
+    errors, since the overlay code now raises ``OverlayWarning``-style
+    messages for missing ratings.
+    """
+    text = KOMETA_PY.read_text(encoding="utf-8")
+    assert "(\"Overlay Warning: No 'anidb_average_rating' found\"," in text
+    assert 'logger.separator("Overlay Summary", space=False, border=False)' in text
+    assert 'logger.info("Count | Message")' in text
+    assert 'logger.separator("Convert Summary", space=False, border=False)' in text
+    assert 'return f"{message} for {source}"' in text
+    assert 'r".+ Warning: No Logo Found at .+", "Warning: No Logo Found"' in text
+    assert "Plex Error: resolution: No matches found with regex pattern" not in text
+
+
+def test_overlay_attempts_are_reported_in_overlay_summary() -> None:
+    """Regression for overlay attempt noise from failed item overlays.
+
+    Per-item overlay failures should now be grouped into the overlay
+    summary instead of only surfacing in the generic error table.
+    """
+    text = KOMETA_PY.read_text(encoding="utf-8")
+    assert '("Overlays Attempted on", r"Overlays Attempted on (.*): .+")' in text
+    assert 'key == "Overlays Attempted on"' in text
+
+
+def test_letterboxd_tmdb_failures_are_summarized() -> None:
+    """Regression for repeated Letterboxd per-item TMDb lookup noise.
+
+    These are high-volume item-level messages that should collapse into
+    the end-of-run summary instead of filling the report with one line
+    per title.
+    """
+    text = KOMETA_PY.read_text(encoding="utf-8")
+    assert 'r"Letterboxd Error: TMDb Movie ID not found at .+ item is type .+ with tmdb_id .+\\."' in text
+    assert 'r"Letterboxd Warning: TMDb link for .+ is for a TV show, not a movie; ignoring TMDb ID .+ from link\\."' in text
+
+
+def test_asset_paths_and_warnings_are_summarized() -> None:
+    """Variable asset paths should not produce one summary row per file."""
+    cases = {
+        "Asset Warning: Asset Directory Not Found and Created: /config/assets": "Asset Warning: Asset Directory Not Found and Created",
+        "Asset Warning: No supported artwork found in the assets folder '/config/assets'": "Asset Warning: No supported artwork found in the assets folder",
+        "Collection Error: Background Path Does Not Exist: /config/background.jpg": "Error: Background Path Does Not Exist",
+        "Overlay Error: Logo Path Does Not Exist: /config/logo.png": "Error: Logo Path Does Not Exist",
+        "Playlist Error: Poster Path Does Not Exist: /config/poster.jpg": "Error: Poster Path Does Not Exist",
+        "Collection Error: Square Art Path Does Not Exist: /config/square.jpg": "Error: Square Art Path Does Not Exist",
+        "Collection Error: Theme Path Does Not Exist: /config/theme.mp3": "Error: Theme Path Does Not Exist",
+    }
+    for message, expected in cases.items():
+        assert _summarize_log_message(message) == expected
+
+
+def test_missing_tmdb_collections_are_summarized() -> None:
+    """Variable collection IDs should collapse into one summary row."""
+    message = "TMDb Error: Collection ID 1698578 missing on TMDb; add '1698578' to the franchise exclude list if this is auto-built."
+    expected = "TMDb Error: Collection ID missing on TMDb; add it to the franchise exclude list if this is auto-built"
+    assert _summarize_log_message(message) == expected
+
+
+def test_missing_builder_parts_are_summarized() -> None:
+    """Variable IDs and item data should collapse for collections and playlists."""
+    cases = {
+        "Collection Warning: tvdb_episode:75710_1_1 -> Criminal Minds Season: 1 Episode: 1 Missing": "TVDb Episode Missing",
+        "Playlist Warning: tvdb_episode:75710_1_2 -> Criminal Minds Season: 1 Episode: 2 Missing": "TVDb Episode Missing",
+        "Collection Warning: tvdb_season:75710_1 -> Criminal Minds Season: 1 Missing": "TVDb Season Missing",
+        "Playlist Warning: tvdb_season:75710_2 -> Criminal Minds Season: 2 Missing": "TVDb Season Missing",
+        "Collection Warning: imdb:tt0452812 -> Criminal Minds Season: 1 Episode: 1 Missing": "IMDb Episode Missing",
+        "Playlist Warning: imdb:tt0452813 -> Criminal Minds Season: 1 Episode: 2 Missing": "IMDb Episode Missing",
+    }
+    for message, expected in cases.items():
+        assert _summarize_log_message(message) == expected
+
+
+def test_status_summary_skips_empty_tables() -> None:
+    """Regression for the run-status table header.
+
+    If there is no status data to report, the summary should stay quiet
+    rather than printing an empty header row.
+    """
+    text = KOMETA_PY.read_text(encoding="utf-8")
+    assert "if not status:\n            return" in text

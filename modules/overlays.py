@@ -95,17 +95,17 @@ class Overlays:
                 try:
                     logger.ghost(f"Overlaying: ({i}/{total_keys}) {item_title}")
                     image_compare = None
-                    overlay_compare = None
+                    cached_state = {}
                     poster = None
                     if self.cache:
-                        image, image_compare, overlay_compare = self.cache.query_image_map(item.ratingKey, f"{self.library.image_table_name}_overlays")
+                        _, image_compare = self.cache.query_overlay_poster(item.ratingKey, f"{self.library.image_table_name}_overlays")
+                        cached_state = self.cache.query_overlay_state(item.ratingKey, f"{self.library.image_table_name}_overlay_state")
                     if not is_emby:
                         self.library.reload(item, force=self.library.reapply_overlays)
 
-                    overlay_compare = [] if overlay_compare is None else util.get_list(overlay_compare, split="|")
                     has_overlay = os.path.exists(emby_overlay_path) if is_emby else any([item_tag.tag.lower() == "overlay" for item_tag in self.library.item_labels(item)])
 
-                    compare_names = {properties[ov].get_overlay_compare(): ov for ov in over_names}
+                    current_hashes = {properties[ov].mapping_name: properties[ov].get_overlay_compare() for ov in over_names}
                     blur_num = 0
                     applied_names = []
                     queue_overlays = {}
@@ -113,7 +113,7 @@ class Overlays:
                         current_overlay = properties[over_name]
                         if current_overlay.name.startswith("blur"):
                             logger.info(over_name)
-                            blur_test = int(re.search("\\(([^)]+)\\)", current_overlay.name).group(1))
+                            blur_test = int(re.search("\\(([^)]+)\\)", current_overlay.name).group(1))  # type: ignore[union-attr]
                             if blur_test > blur_num:
                                 blur_num = blur_test
                         elif current_overlay.queue_name:
@@ -127,21 +127,31 @@ class Overlays:
 
                     overlay_change = "" if has_overlay else f"No Overlay {'File' if is_emby else 'Label'}"
                     if not overlay_change:
-                        for oc in overlay_compare:
-                            if oc not in compare_names:
-                                overlay_change = f"{oc} not in {compare_names}"
+                        for cached_key in cached_state:
+                            if cached_key not in current_hashes:
+                                overlay_change = f"Overlay Removed: {cached_key}"
 
                     if not overlay_change:
-                        for compare_name, original_name in compare_names.items():
-                            if compare_name not in overlay_compare or properties[original_name].updated:
-                                overlay_change = f"{compare_name} not in {overlay_compare} or {properties[original_name].updated}"
+                        for over_name in over_names:
+                            mapping_name = properties[over_name].mapping_name
+                            if mapping_name not in cached_state:
+                                overlay_change = f"New Overlay: {mapping_name}"
+                            elif cached_state[mapping_name][0] != current_hashes[mapping_name]:
+                                overlay_change = f"Overlay Changed: {mapping_name}"
+                            elif properties[over_name].updated:
+                                overlay_change = f"Overlay Image Updated: {mapping_name}"
 
                     if self.cache:
                         for over_name in over_names:
                             if properties[over_name].name.startswith("text"):
-                                for cache_key, cache_value in self.cache.query_overlay_special_text(item.ratingKey).items():
+                                for cache_key, cache_value in self.cache.query_overlay_value_cache_all(item.ratingKey).items():
                                     actual = plex.attribute_translation[cache_key] if cache_key in plex.attribute_translation else cache_key
-                                    if actual == "total_runtime":
+                                    if cache_key in overlay.rating_sources:
+                                        try:
+                                            real_value = self.library.fetch_overlay_value(item, cache_key)
+                                        except Failed:
+                                            continue
+                                    elif actual == "total_runtime":
                                         sub_items = item.episodes() if current_overlay.level in ["show", "season"] else item.tracks()
                                         sub_items = [ep.duration for ep in sub_items if hasattr(ep, "duration") and ep.duration]
                                         real_value = sum(sub_items)
@@ -156,7 +166,7 @@ class Overlays:
                                     if cache_key in overlay.int_vars:
                                         cache_value = int(cache_value)
                                     if cache_key in overlay.date_vars:
-                                        real_value = real_value.strftime("%Y-%m-%d")  # noqa
+                                        real_value = real_value.strftime("%Y-%m-%d")  # type: ignore[union-attr] # noqa
                                     if real_value != cache_value:
                                         overlay_change = f"Special Text Changed from {cache_value} to {real_value}"
                     try:
@@ -230,6 +240,8 @@ class Overlays:
                         except Failed as e:
                             raise Failed(f"  Overlay Error: {e}")
                     poster_compare = None
+                    resolved_values = {}
+                    unresolved = set()
                     if not is_emby and poster is None and has_original is None:
                         logger.error("  Overlay Error: No poster found")
                     elif self.library.reapply_overlays or new_backup or overlay_change or changed_image:
@@ -255,7 +267,7 @@ class Overlays:
                                     full_text = text_overlay.name[5:-1]
                                     for format_var in overlay.vars_by_type[text_overlay.level]:
                                         if f"<<{format_var}" in full_text and format_var == "originally_available[":
-                                            mod = re.search("<<originally_available\\[(.+)]>>", full_text).group(1)
+                                            mod = re.search("<<originally_available\\[(.+)]>>", full_text).group(1)  # type: ignore[union-attr]
                                             format_var = "originally_available"
                                         elif f"<<{format_var}>>" in full_text and format_var.endswith(tuple(m for m in overlay.double_mods)):
                                             mod = format_var[-2:]
@@ -275,7 +287,7 @@ class Overlays:
                                             actual_attr = format_var
                                         if format_var == "bitrate":
                                             actual_value = None
-                                            for media in item.media:
+                                            for media in item.media:  # type: ignore[union-attr]
                                                 current = int(media.bitrate)
                                                 if actual_value is None:
                                                     actual_value = current
@@ -439,21 +451,23 @@ class Overlays:
                                                     logger.warning(err)
                                                 else:
                                                     logger.error(err)
-                                            if found_rating:
+                                            if found_rating is not None:
                                                 actual_value = found_rating
+                                                if self.cache:
+                                                    self.cache.update_overlay_value_cache(False, item.ratingKey, format_var, actual_value)
                                                 logger.trace(f"{format_var}: {actual_value}")
                                             else:
-                                                raise OverlayError(f"Overlay Error: No '{format_var}' found for {item_title}")
+                                                raise OverlayError(f"Overlay Warning: No '{format_var}' found for '{item_title}'")
                                         elif format_var == "runtime" and text_overlay.level in ["show", "season", "artist", "album"]:
                                             if hasattr(item, "duration") and item.duration:
                                                 actual_value = item.duration
                                             else:
-                                                sub_items = item.episodes() if text_overlay.level in ["show", "season"] else item.tracks()
-                                                sub_items = [ep.duration for ep in sub_items if hasattr(ep, "duration") and ep.duration]
+                                                sub_items = item.episodes() if text_overlay.level in ["show", "season"] else item.tracks()  # type: ignore[union-attr]
+                                                sub_items = [ep.duration for ep in sub_items if hasattr(ep, "duration") and ep.duration]  # type: ignore[union-attr]
                                                 actual_value = sum(sub_items) / len(sub_items)
                                         elif format_var == "total_runtime":
-                                            sub_items = item.episodes() if text_overlay.level in ["show", "season"] else item.tracks()
-                                            sub_items = [ep.duration for ep in sub_items if hasattr(ep, "duration") and ep.duration]
+                                            sub_items = item.episodes() if text_overlay.level in ["show", "season"] else item.tracks()  # type: ignore[union-attr]
+                                            sub_items = [ep.duration for ep in sub_items if hasattr(ep, "duration") and ep.duration]  # type: ignore[union-attr]
                                             actual_value = sum(sub_items)
                                         else:
                                             if not hasattr(item, actual_attr) or getattr(item, actual_attr) is None:
@@ -461,40 +475,40 @@ class Overlays:
                                             actual_value = getattr(item, actual_attr)
                                             if format_var == "versions":
                                                 actual_value = len(actual_value)
-                                        if self.cache:
-                                            cache_store = actual_value.strftime("%Y-%m-%d") if format_var in overlay.date_vars else actual_value
-                                            self.cache.update_overlay_special_text(item.ratingKey, format_var, cache_store)
+                                        if self.cache and format_var not in overlay.rating_sources:
+                                            cache_store = actual_value.strftime("%Y-%m-%d") if format_var in overlay.date_vars else actual_value  # type: ignore[union-attr]
+                                            self.cache.update_overlay_value_cache(False, item.ratingKey, format_var, cache_store)
                                         sub_value = None
                                         if format_var == "originally_available":
                                             if mod:
                                                 sub_value = "<<originally_available\\[(.+)]>>"
-                                                final_value = actual_value.strftime(mod)
+                                                final_value = actual_value.strftime(mod)  # type: ignore[union-attr]
                                             else:
-                                                final_value = actual_value.strftime("%Y-%m-%d")
+                                                final_value = actual_value.strftime("%Y-%m-%d")  # type: ignore[union-attr]
                                         elif format_var in ["runtime", "total_runtime"]:
                                             if mod == "H":
-                                                final_value = int((actual_value / 60000) // 60)
+                                                final_value = int((actual_value / 60000) // 60)  # type: ignore[operator]
                                             elif mod == "M":
-                                                final_value = int((actual_value / 60000) % 60)
+                                                final_value = int((actual_value / 60000) % 60)  # type: ignore[operator]
                                             else:
-                                                final_value = int(actual_value / 60000)
+                                                final_value = int(actual_value / 60000)  # type: ignore[operator]
                                         elif mod == "%":
-                                            final_value = int(float(actual_value) * 10)
+                                            final_value = int(float(actual_value) * 10)  # type: ignore[arg-type]
                                         elif mod == "#":
-                                            actual_value = f"{float(actual_value):.1f}"
+                                            actual_value = f"{float(actual_value):.1f}"  # type: ignore[arg-type]
                                             final_value = actual_value[:-2] if actual_value.endswith(".0") else actual_value
                                         elif mod == "/":
-                                            final_value = f"{float(actual_value) / 2:.1f}"
+                                            final_value = f"{float(actual_value) / 2:.1f}"  # type: ignore[arg-type]
                                         elif mod == "W":
-                                            final_value = num2words(int(actual_value))
+                                            final_value = num2words(int(actual_value))  # type: ignore[arg-type]
                                         elif mod == "WU":
-                                            final_value = num2words(int(actual_value)).upper()
+                                            final_value = num2words(int(actual_value)).upper()  # type: ignore[arg-type]
                                         elif mod == "WL":
-                                            final_value = num2words(int(actual_value)).lower()
+                                            final_value = num2words(int(actual_value)).lower()  # type: ignore[arg-type]
                                         elif mod == "0":
-                                            final_value = f"{int(actual_value):02}"
+                                            final_value = f"{int(actual_value):02}"  # type: ignore[arg-type]
                                         elif mod == "00":
-                                            final_value = f"{int(actual_value):03}"
+                                            final_value = f"{int(actual_value):03}"  # type: ignore[arg-type]
                                         elif mod == "U":
                                             final_value = str(actual_value).upper()
                                         elif mod == "L":
@@ -502,7 +516,7 @@ class Overlays:
                                         elif mod == "P":
                                             final_value = str(actual_value).title()
                                         elif format_var in overlay.rating_sources:
-                                            final_value = f"{float(actual_value):.1f}"
+                                            final_value = f"{float(actual_value):.1f}"  # type: ignore[arg-type]
                                         else:
                                             final_value = actual_value
                                         if sub_value:
@@ -517,10 +531,13 @@ class Overlays:
                                         if "<<" in current_overlay.name:
                                             image_box = current_overlay.image.size if current_overlay.image else None
                                             try:
-                                                overlay_image, addon_box = current_overlay.get_backdrop((canvas_width, canvas_height), box=image_box, text=get_text(current_overlay))
+                                                rendered_text = get_text(current_overlay)
                                             except Failed as e:
                                                 logger.warning(f"  {e}")
+                                                unresolved.add(current_overlay.mapping_name)
                                                 continue
+                                            resolved_values[current_overlay.mapping_name] = rendered_text
+                                            overlay_image, addon_box = current_overlay.get_backdrop((canvas_width, canvas_height), box=image_box, text=rendered_text)
                                             new_poster.paste(overlay_image, (0, 0), overlay_image)
                                         else:
                                             overlay_image, addon_box = current_overlay.get_canvas(item)
@@ -552,10 +569,13 @@ class Overlays:
                                         if current_overlay.name.startswith("text"):
                                             image_box = current_overlay.image.size if current_overlay.image else None
                                             try:
-                                                overlay_image, addon_box = current_overlay.get_backdrop((canvas_width, canvas_height), box=image_box, text=get_text(current_overlay), new_cords=cord)
+                                                rendered_text = get_text(current_overlay)
                                             except Failed as e:
                                                 logger.warning(f"  {e}")
+                                                unresolved.add(current_overlay.mapping_name)
                                                 continue
+                                            resolved_values[current_overlay.mapping_name] = rendered_text
+                                            overlay_image, addon_box = current_overlay.get_backdrop((canvas_width, canvas_height), box=image_box, text=rendered_text, new_cords=cord)
                                             new_poster.paste(overlay_image, (0, 0), overlay_image)
                                             if current_overlay.image:
                                                 new_poster.paste(current_overlay.image, addon_box, current_overlay.image)
@@ -591,7 +611,14 @@ class Overlays:
                         logger.info(f"  Overlay Update Not Needed (Current Overlays: {', '.join(over_names)})")
 
                     if self.cache and poster_compare:
-                        self.cache.update_image_map(item.ratingKey, f"{self.library.image_table_name}_overlays", getattr(item, "thumb", ""), poster_compare, overlay="|".join(compare_names))
+                        self.cache.update_overlay_poster(item.ratingKey, f"{self.library.image_table_name}_overlays", getattr(item, "thumb", ""), poster_compare)
+                        state_table = f"{self.library.image_table_name}_overlay_state"
+                        self.cache.delete_overlay_state(item.ratingKey, state_table)
+                        for over_name in over_names:
+                            mapping_name = properties[over_name].mapping_name
+                            if mapping_name in unresolved:
+                                continue
+                            self.cache.update_overlay_state(item.ratingKey, mapping_name, state_table, current_hashes[mapping_name], resolved_values.get(mapping_name))
                 except Failed as e:
                     logger.error(f"  {e}\n  Overlays Attempted on {item_title}: {', '.join(over_names)}")
                 except Exception as e:
@@ -663,7 +690,6 @@ class Overlays:
                 except FilterFailed:
                     pass
                 except Failed as e:
-                    logger.stacktrace()
                     logger.error(e)
                     logger.info("")
                 except Exception as e:

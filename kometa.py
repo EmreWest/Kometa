@@ -10,6 +10,7 @@ import uuid
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
+from typing import TypeAlias
 
 code_base = os.path.dirname(os.path.abspath(__file__))
 default_dir = os.path.join(code_base, "config")
@@ -65,6 +66,7 @@ try:
     import pathvalidate
     import PIL
     import plexapi
+    import plexapi.server  # needed for plexapi.server.TIMEOUT assignment
     import psutil
     import requests
     import ruamel.yaml
@@ -91,15 +93,17 @@ system_versions = {
     "PlexAPI": plexapi.__version__,
     "psutil": psutil.__version__,
     "python-dotenv": dotenv_version.__version__,
-    "python-dateutil": dateutil.__version__,  # noqa
+    "python-dateutil": dateutil.__version__,  # type: ignore[attr-defined]  # dateutil doesn't declare __version__ in stubs
     "pywin32": None,
-    "requests": requests.__version__,
+    "requests": requests.__version__,  # type: ignore[attr-defined]  # requests declares __version__ as private
     "ruamel.yaml": ruamel.yaml.__version__,
     "schedule": None,
     "setuptools": setuptools.__version__,
     "tenacity": None,
     "tmdbapis": tmdbapis.__version__,
 }
+
+LibraryRunStatus: TypeAlias = dict[str, dict[str, str]]
 
 load_dotenv(os.path.join(default_dir, ".env"))
 
@@ -416,6 +420,43 @@ def collection_count_after_run(beginning_count, items_added, items_removed):
     return max(0, items_added + beginning_count - items_removed)
 
 
+def summarize_duplicate_collections(collections):
+    titles = {}
+    counts = {}
+    for collection in collections:
+        title = str(getattr(collection, "title", "")).strip()
+        if not title:
+            continue
+        key = title.casefold()
+        counts[key] = counts.get(key, 0) + 1
+        titles.setdefault(key, title)
+    return sorted([(titles[key], count) for key, count in counts.items() if count > 1], key=lambda item: (-item[1], item[0].casefold()))
+
+
+def report_duplicate_collections(config):
+    duplicate_libraries = []
+    for library in config.libraries:
+        if getattr(library, "skip_library", False):
+            continue
+        try:
+            duplicate_titles = summarize_duplicate_collections(library.get_all_collections())
+        except Exception as e:
+            logger.warning(f"Plex Warning: Failed to scan duplicate collections in {library.name}: {e}")
+            continue
+        if duplicate_titles:
+            duplicate_libraries.append((library.name, duplicate_titles))
+
+    if duplicate_libraries:
+        logger.separator("Duplicate Collections", space=False, border=False)
+        logger.info("")
+        for library_name, duplicate_titles in duplicate_libraries:
+            logger.warning(f"Plex Warning: Duplicate collection titles detected in {library_name} Library")
+            for title, count in duplicate_titles:
+                logger.warning(f"  {count} instances: {title}")
+            logger.warning("If this is unexpected, consider checking Plex DBRepair.")
+            logger.warning("")
+
+
 def start(attrs):
     try:
         if run_args["validate-file"] or run_args["validate-dir"]:
@@ -579,6 +620,9 @@ def start(attrs):
             except Failed as e:
                 logger.stacktrace()
                 logger.error(f"Webhooks Error: {e}")
+            # Close cache connection to clean up WAL/SHM files
+            if config.Cache:
+                config.Cache.close()
         version_line = f"Version: {my_requests.local}"
         if my_requests.newest:
             version_line = f"{version_line}        Newest Version: {my_requests.newest}"
@@ -590,6 +634,38 @@ def start(attrs):
 
             other_log_groups = [
                 ("No Items found for", r"No Items found for .* \(\d+\) (.*)"),
+                ("Overlay Warning: No 'anidb_average_rating' found", r"Overlay Warning: No 'anidb_average_rating' found for (.*)"),
+                ("Overlay Warning: No 'anidb_rating' found", r"Overlay Warning: No 'anidb_rating' found for (.*)"),
+                ("Overlay Warning: No 'anidb_score_rating' found", r"Overlay Warning: No 'anidb_score_rating' found for (.*)"),
+                ("Overlay Warning: No 'audience_rating' found", r"Overlay Warning: No 'audience_rating' found for (.*)"),
+                ("Overlay Warning: No 'critic_rating' found", r"Overlay Warning: No 'critic_rating' found for (.*)"),
+                ("Overlay Warning: No 'imdb_rating' found", r"Overlay Warning: No 'imdb_rating' found for (.*)"),
+                ("Overlay Warning: No 'mal_rating' found", r"Overlay Warning: No 'mal_rating' found for (.*)"),
+                ("Overlay Warning: No 'mdb_average_rating' found", r"Overlay Warning: No 'mdb_average_rating' found for (.*)"),
+                ("Overlay Warning: No 'mdb_imdb_rating' found", r"Overlay Warning: No 'mdb_imdb_rating' found for (.*)"),
+                ("Overlay Warning: No 'mdb_letterboxd_rating' found", r"Overlay Warning: No 'mdb_letterboxd_rating' found for (.*)"),
+                ("Overlay Warning: No 'mdb_metacritic_rating' found", r"Overlay Warning: No 'mdb_metacritic_rating' found for (.*)"),
+                ("Overlay Warning: No 'mdb_metacriticuser_rating' found", r"Overlay Warning: No 'mdb_metacriticuser_rating' found for (.*)"),
+                ("Overlay Warning: No 'mdb_myanimelist_rating' found", r"Overlay Warning: No 'mdb_myanimelist_rating' found for (.*)"),
+                ("Overlay Warning: No 'mdb_rating' found", r"Overlay Warning: No 'mdb_rating' found for (.*)"),
+                ("Overlay Warning: No 'mdb_tmdb_rating' found", r"Overlay Warning: No 'mdb_tmdb_rating' found for (.*)"),
+                ("Overlay Warning: No 'mdb_tomatoesaudience_rating' found", r"Overlay Warning: No 'mdb_tomatoesaudience_rating' found for (.*)"),
+                ("Overlay Warning: No 'mdb_tomatoes_rating' found", r"Overlay Warning: No 'mdb_tomatoes_rating' found for (.*)"),
+                ("Overlay Warning: No 'mdb_trakt_rating' found", r"Overlay Warning: No 'mdb_trakt_rating' found for (.*)"),
+                ("Overlay Warning: No 'omdb_imdb_rating' found", r"Overlay Warning: No 'omdb_imdb_rating' found for (.*)"),
+                ("Overlay Warning: No 'omdb_metascore_rating' found", r"Overlay Warning: No 'omdb_metascore_rating' found for (.*)"),
+                ("Overlay Warning: No 'omdb_rating' found", r"Overlay Warning: No 'omdb_rating' found for (.*)"),
+                ("Overlay Warning: No 'omdb_tomatoes_rating' found", r"Overlay Warning: No 'omdb_tomatoes_rating' found for (.*)"),
+                ("Overlay Warning: No 'plex_imdb_rating' found", r"Overlay Warning: No 'plex_imdb_rating' found for (.*)"),
+                ("Overlay Warning: No 'plex_tmdb_rating' found", r"Overlay Warning: No 'plex_tmdb_rating' found for (.*)"),
+                ("Overlay Warning: No 'plex_tomatoesaudience_rating' found", r"Overlay Warning: No 'plex_tomatoesaudience_rating' found for (.*)"),
+                ("Overlay Warning: No 'plex_tomatoes_rating' found", r"Overlay Warning: No 'plex_tomatoes_rating' found for (.*)"),
+                ("Overlay Warning: No 'plex_user_rating' found", r"Overlay Warning: No 'plex_user_rating' found for (.*)"),
+                ("Overlay Warning: No 'tmdb_rating' found", r"Overlay Warning: No 'tmdb_rating' found for (.*)"),
+                ("Overlay Warning: No 'trakt_rating' found", r"Overlay Warning: No 'trakt_rating' found for (.*)"),
+                ("Overlay Warning: No 'trakt_user_rating' found", r"Overlay Warning: No 'trakt_user_rating' found for (.*)"),
+                ("Overlay Warning: No 'user_rating' found", r"Overlay Warning: No 'user_rating' found for (.*)"),
+                ("Overlays Attempted on", r"Overlays Attempted on (.*): .+"),
                 ("Convert Warning: No TVDb ID or IMDb ID found for AniDB ID", r"Convert Warning: No TVDb ID or IMDb ID found for AniDB ID '(.*)'"),
                 ("Convert Warning: No AniDB ID Found for AniList ID", r"Convert Warning: No AniDB ID Found for AniList ID '(.*)'"),
                 ("Convert Warning: No AniDB ID Found for MyAnimeList ID", r"Convert Warning: No AniDB ID Found for MyAnimeList ID '(.*)'"),
@@ -610,8 +686,44 @@ def start(attrs):
                 ("Convert Error: No TVDb ID found for TMDb ID", r"Convert Error: No TVDb ID found for TMDb ID '(.*)'"),
             ]
             summary_log_groups = [
-                (r"Asset Warning: Asset Directory Not Found and Created: .+", "Asset Warning: Asset Directory not found and created"),
-                (r"Asset Warning: No poster or background found in the assets folder '.+'", "Asset Warning: No poster or background found in the assets folder"),
+                (r"AniDB Error: No valid AniDB IDs found in input: .+", "AniDB Error: No valid AniDB IDs found in input"),
+                (r"AniList Error: No valid AniList IDs in .+", "AniList Error: No valid AniList IDs"),
+                (r"Asset Warning: Asset Directory Not Found and Created: .+", "Asset Warning: Asset Directory Not Found and Created"),
+                (r"Asset Warning: No supported artwork found in the assets folder '.+'", "Asset Warning: No supported artwork found in the assets folder"),
+                (r"Asset Warning: No poster found for '.+' in the assets folder '.+'", "Asset Warning: No poster found in the assets folder"),
+                (r"Asset Warning: No poster '.+' found in the assets folders", "Asset Warning: No poster found in the assets folders"),
+                (r"Asset Warning: No poster or background found in an assets folder for '.+'", "Asset Warning: No poster or background found in an assets folder"),
+                (r"Asset Warning: Unable to find asset folder: '.+'", "Asset Warning: Unable to find asset folder"),
+                (r"Collection Error: No valid Plex Collections in .+", "Collection Error: No valid Plex Collections"),
+                (r"(?:Collection|Playlist) Warning: tvdb_episode:\d+_\d+_\d+ -> .+ Season: \d+ Episode: \d+ Missing", "TVDb Episode Missing"),
+                (r"(?:Collection|Playlist) Warning: tvdb_season:\d+_\d+ -> .+ Season: \d+ Missing", "TVDb Season Missing"),
+                (r"(?:Collection|Playlist) Warning: imdb:tt\d+ -> .+ Season: \d+ Episode: \d+ Missing", "IMDb Episode Missing"),
+                (r".+ Error: Background Path Does Not Exist: .+", "Error: Background Path Does Not Exist"),
+                (r".+ Error: Logo Path Does Not Exist: .+", "Error: Logo Path Does Not Exist"),
+                (r".+ Error: Poster Path Does Not Exist: .+", "Error: Poster Path Does Not Exist"),
+                (r".+ Error: Square Art Path Does Not Exist: .+", "Error: Square Art Path Does Not Exist"),
+                (r".+ Error: Theme Path Does Not Exist: .+", "Error: Theme Path Does Not Exist"),
+                (r".+ Error: No builders were found", "Error: No builders were found"),
+                (r".+ Error: No Plex Filter Created", "Error: No Plex Filter Created"),
+                (r".+ Error: No Filter Created", "Error: No Filter Created"),
+                (r"Letterboxd Error: No List Items found in .+", "Letterboxd Error: No List Items found"),
+                (r"Letterboxd Error: TMDb Movie ID not found at .+ item is type .+ with tmdb_id .+\.", "Letterboxd Error: TMDb Movie ID not found"),
+                (r"Letterboxd Warning: TMDb link for .+ is for a TV show, not a movie; ignoring TMDb ID .+ from link\.", "Letterboxd Warning: TMDb link is for a TV show, not a movie"),
+                (r"Mojo Error: No List Items found in .+", "Mojo Error: No List Items found"),
+                (r"Text File Error: No IDs found at .+", "Text File Error: No IDs found"),
+                (r"Text File Error: No supported IDs found in .+", "Text File Error: No supported IDs found"),
+                (
+                    r"TMDb Error: Collection ID \d+ missing on TMDb; add '\d+' to the franchise exclude list if this is auto-built\.",
+                    "TMDb Error: Collection ID missing on TMDb; add it to the franchise exclude list if this is auto-built",
+                ),
+                (r"TMDb Error: No valid TMDb IDs in .+", "TMDb Error: No valid TMDb IDs"),
+                (r"Trakt Error: No TVDb ID found for .+", "Trakt Error: No TVDb ID found"),
+                (r"Trakt Error: No valid Trakt Lists in .+", "Trakt Error: No valid Trakt Lists"),
+                (r"TVDb Error: No TVDb IDs found at .+", "TVDb Error: No TVDb IDs found"),
+                (r".+ Warning: No Background Found at .+", "Warning: No Background Found"),
+                (r".+ Warning: No Logo Found at .+", "Warning: No Logo Found"),
+                (r".+ Warning: No Poster Found at .+", "Warning: No Poster Found"),
+                (r".+ Warning: No Square Art Found at .+", "Warning: No Square Art Found"),
             ]
             other_message = {}
 
@@ -643,10 +755,30 @@ def start(attrs):
                                     log_data[err_type] = []
                                 log_data[err_type].append(log_line)
 
-            if "No Items found for" in other_message:
-                logger.separator("Overlay Errors Summary", space=False, border=False)
+            if log_data or other_message:
+                logger.separator(space=False)
                 logger.info("")
-                logger.info(f"No Items found for {other_message['No Items found for']['count']} Overlays: {other_message['No Items found for']['list']}")
+                logger.info_center("The following errors and warnings were identified during the run.")
+                logger.info_center("Search your log for any of the messages below to find where they originated.")
+                logger.info("")
+
+            overlay_title = False
+            details = run_args["trace"] or run_args["log-requests"]
+            for key, _ in other_log_groups:
+                if (key == "No Items found for" or key.startswith("Overlay Warning") or key == "Overlays Attempted on") and key in other_message:
+                    if overlay_title is False:
+                        logger.separator("Overlay Summary", space=False, border=False)
+                        logger.info("")
+                        logger.info("Count | Message")
+                        logger.separator(f"{logger.separating_character * 5}|", space=False, border=False, side_space=False, left=True)
+                        overlay_title = True
+                    overlay_count = other_message[key]["count"]
+                    overlay_line = "No Items found" if key == "No Items found for" else key
+                    if details:
+                        logger.info(f"{overlay_count:>5} | {overlay_line}: {other_message[key]['list']}")
+                    else:
+                        logger.info(f"{overlay_count:>5} | {overlay_line}")
+            if overlay_title:
                 logger.info("")
 
             convert_title = False
@@ -654,19 +786,26 @@ def start(attrs):
             def convert_summary_title(key):
                 summary = key.split(": ", 1)[1].rstrip(":")
                 if " for " not in summary:
-                    return f"{summary}:"
+                    return summary
                 message, source = summary.rsplit(" for ", 1)
                 source = source.replace(" ID", " IDs").replace(" Guid", " Guids")
-                return f"{message} for the following {source}:"
+                return f"{message} for {source}"
 
             for key, _ in other_log_groups:
                 if key.startswith(("Convert Warning", "Convert Error")) and key in other_message:
                     if convert_title is False:
                         logger.separator("Convert Summary", space=False, border=False)
                         logger.info("")
+                        logger.info("Count | Message")
+                        logger.separator(f"{logger.separating_character * 5}|", space=False, border=False, side_space=False, left=True)
                         convert_title = True
-                    logger.info(convert_summary_title(key))
-                    logger.info(f"    {', '.join(other_message[key]['list'])}")
+                    count = other_message[key]["count"]
+                    convert_line = convert_summary_title(key)
+                    if details:
+                        logger.info(f"{count:>5} | {convert_line}:")
+                        logger.info(f"    {', '.join(other_message[key]['list'])}")
+                    else:
+                        logger.info(f"{count:>5} | {convert_line}")
             if convert_title:
                 logger.info("")
 
@@ -694,7 +833,7 @@ def start(attrs):
 
 
 def run_config(config, stats):
-    library_status = run_libraries(config)
+    library_status, collections_ran = run_libraries(config)
 
     playlist_status = {}
     playlist_stats = {}
@@ -789,6 +928,8 @@ def run_config(config, stats):
                 longest = len(title)
 
     def print_status(status):
+        if not status:
+            return
         logger.info(f"{'Title':^{longest}} |   +   |   =   |   -   | Run Time | {'Status'}")
         breaker = f"{logger.separating_character * longest}|{logger.separating_character * 7}|{logger.separating_character * 7}|{logger.separating_character * 7}|{logger.separating_character * 10}|"
         logger.separator(breaker, space=False, border=False, side_space=False, left=True)
@@ -818,6 +959,9 @@ def run_config(config, stats):
         logger.info("")
         print_status(playlist_status)
 
+    if collections_ran:
+        report_duplicate_collections(config)
+
     stats["added"] += amount_added
     for library in config.libraries:
         stats["created"] += library.stats["created"]
@@ -842,8 +986,10 @@ def run_config(config, stats):
     return stats
 
 
-def run_libraries(config):
-    library_status = {}
+def run_libraries(config) -> tuple[LibraryRunStatus, bool]:
+    library_status: LibraryRunStatus = {}
+    collections_ran = False
+    config.run_libraries = []
     for library in config.libraries:
         if library.skip_library:
             logger.info("")
@@ -852,7 +998,7 @@ def run_libraries(config):
         library_status[library.name] = {}
         try:
             # logger.add_library_handler(library.mapping_name)
-            plexapi.server.TIMEOUT = library.timeout
+            plexapi.server.TIMEOUT = library.timeout  # pyright: ignore[reportPrivateImportUsage,reportAttributeAccessIssue]
             os.environ["PLEXAPI_PLEXAPI_TIMEOUT"] = str(library.timeout)
             logger.info("")
             logger.separator(f"{library.original_mapping_name} Library")
@@ -945,6 +1091,7 @@ def run_libraries(config):
                 logger.info("")
                 library.map_guids(temp_items)
             library_status[library.name]["Library Loading and Mapping"] = str(datetime.now() - time_start).split(".")[0]
+            config.run_libraries.append(library)
 
             runs = {
                 "metadata": all([not run_args[x] for x in ["tests", "operations-only", "overlays-only", "playlists-only", "collections-only"]]),
@@ -955,6 +1102,8 @@ def run_libraries(config):
             # Pre-populate collection_names before the run_order loop so that operations can correctly identify unconfigured collections regardless of run_order.
             # Without this, if operations runs before collections, collection_names is empty and every Plex collection is incorrectly flagged as unconfigured. #1968
             if runs["collections"]:
+                # Only report duplicate collection titles when Kometa actually processed collections this run.
+                collections_ran = True
                 for metadata in library.collection_files:
                     if config.requested_files and metadata.get_file_name() not in config.requested_files:
                         continue
@@ -985,9 +1134,14 @@ def run_libraries(config):
                             run_collection(config, library, metadata, collections_to_run)
                             # logger.re_add_library_handler(library.mapping_name)
                     library_status[library.name]["Library Collection Files"] = str(datetime.now() - time_start).split(".")[0]
-                    if library.hub_priorities or library.auto_sort_hubs:
+                    # Skip hub sorting on a targeted -rc or -rf run: only the requested collections/files are rebuilt, so hub_priorities only reflects those collections, not every pinned collection.
+                    targeted_run = config.requested_collections or config.requested_files
+                    if not targeted_run and (library.hub_priorities or library.auto_sort_hubs):
                         library.sort_collection_hubs(library.hub_priorities, library.auto_sort_hubs, library.hub_config_order, library.hub_title_sorts)
                         library.hub_priorities = {}
+                    elif targeted_run and (library.hub_priorities or library.auto_sort_hubs):
+                        logger.info("")
+                        logger.info("Skipping Hub Sorting because a targeted Collection run (-rc or -rf) does not have the full set of hub_priority values")
                 elif run_type == "metadata" and runs[run_type]:
                     time_start = datetime.now()
                     for images in library.images_files:
@@ -1029,7 +1183,7 @@ def run_libraries(config):
         except Exception as e:
             library.notify(get_critical_error_message(e))
             log_critical_exception(e)
-    return library_status
+    return library_status, collections_ran
 
 
 def run_collection(config, library, metadata, requested_collections):
@@ -1263,7 +1417,7 @@ def run_playlists(config):
             if run_args["tests"] and ("test" not in playlist_attrs or playlist_attrs["test"] is not True):
                 no_template_test = True
                 if "template" in playlist_attrs and playlist_attrs["template"]:
-                    for data_template in util.get_list(playlist_attrs["template"], split=False):
+                    for data_template in util.get_list(playlist_attrs["template"], split=False, return_none=False):
                         if (
                             "name" in data_template
                             and data_template["name"]
@@ -1310,9 +1464,19 @@ def run_playlists(config):
                     ids = builder.libraries[0].get_rating_keys(method, value, True)
                 elif "plex" in method:
                     ids = []
+                    logged_plex_search = False
                     for pl_library in builder.libraries:
                         try:
-                            ids.extend(pl_library.get_rating_keys(method, value, True))
+                            if method == "plex_search":
+                                builder.library = pl_library
+                                plex_search = builder.build_filter("plex_search", value)
+                                if not logged_plex_search:
+                                    search_details = "\n".join(plex_search[1].splitlines()[1:])
+                                    logger.info(f"Processing Plex Search{f'{chr(10)}{search_details}' if search_details else ''}")
+                                    logged_plex_search = True
+                                ids.extend(pl_library.get_rating_keys(method, plex_search, True, display=False))
+                            else:
+                                ids.extend(pl_library.get_rating_keys(method, value, True))
                         except Failed as e:
                             if builder.validate_builders:
                                 raise
@@ -1444,11 +1608,11 @@ if __name__ == "__main__":
         if run_args["run"] or run_args["tests"] or run_args["run-collections"] or run_args["run-libraries"] or run_args["run-files"] or run_args["resume"] or run_args["validate"] or run_args["validate-file"] or run_args["validate-dir"]:
             process({"collections": run_args["run-collections"], "libraries": run_args["run-libraries"], "files": run_args["run-files"]})
         else:
-            times_to_run = util.get_list_bar_then_comma(run_args["times"])
+            times_to_run = util.get_list_bar_then_comma(run_args["times"]) or []
             valid_times = []
             for time_to_run in times_to_run:
                 try:
-                    final_time = datetime.strftime(datetime.strptime(time_to_run, "%H:%M"), "%H:%M")
+                    final_time = datetime.strftime(datetime.strptime(str(time_to_run), "%H:%M"), "%H:%M")
                     if final_time not in valid_times:
                         valid_times.append(final_time)
                 except ValueError:

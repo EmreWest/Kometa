@@ -14,23 +14,20 @@ logger = util.logger
 
 
 class NotFound(Failed):
-    """Raised when a TVDb resource (series/movie) is gone from TVDb (HTTP 4xx).
+    """Raised when TVDb gives a definitive HTTP 4xx for a resource - i.e. TVDb itself confirms there is nothing at this ID."""
 
-    Distinct from Failed so callers can downgrade noisy log lines for IDs the
-    user did not control (e.g. stale TVDb IDs returned by TMDb external_ids).
-    """
+
+class Unavailable(Failed):
+    """Raised when TVDb never returned usable content after retries were exhausted (e.g. repeated 202/empty-body); not a confirmed absence like NotFound."""
 
 
 class TVDbServerError(Exception):
-    """Raised for 5xx responses from TVDb — transient server errors that should be retried.
-
-    Not a subclass of Failed so tenacity's retry_if_not_exception_type(Failed) will retry it.
-    """
+    """Raised for 5xx responses from TVDb; not a Failed subclass so tenacity's retry_if_not_exception_type(Failed) will retry it."""
 
 
 def _tvdb_retry_exhausted(retry_state):
-    """Convert TVDbServerError → Failed once the retry budget is gone."""
-    raise Failed(f"TVDb Error: Server unavailable after {retry_state.attempt_number} attempt(s): {retry_state.outcome.exception()}") from retry_state.outcome.exception()
+    """Convert an exhausted TVDb retry loop (5xx, or repeated unparsable 202/empty responses) into Unavailable."""
+    raise Unavailable(f"TVDb Error: No usable response from TVDb after {retry_state.attempt_number} attempt(s): {retry_state.outcome.exception()}") from retry_state.outcome.exception()
 
 
 builders = ["tvdb_list", "tvdb_list_details", "tvdb_movie", "tvdb_movie_details", "tvdb_show", "tvdb_show_details"]
@@ -249,6 +246,9 @@ class TVDbObj:
                 data = self._tvdb.get_request(item_url)
             except NotFound:
                 raise NotFound(f"TVDb Error: No {'Movie' if is_movie else 'Series'} found for TVDb ID: {tvdb_id} at {item_url}")
+            except Unavailable:
+                # Already has its own accurate message - don't relabel it as "No Series/Movie found"
+                raise
             except (Failed, TVDbServerError):
                 raise Failed(f"TVDb Error: No {'Movie' if is_movie else 'Series'} found for TVDb ID: {tvdb_id} at {item_url}")
 
@@ -268,6 +268,8 @@ class TVDbObj:
             self.summary = data["summary"]
             self.poster_url = data["poster_url"]
             self.background_url = data["background_url"]
+            self.logo_url = data.get("logo_url", "")
+            self.icon_url = data.get("icon_url", "")
             self.release_date = data["release_date"]
             self.status = data["status"]
             self.genres = data["genres"].split("|")
@@ -280,15 +282,17 @@ class TVDbObj:
             if not self.title:
                 raise Failed(f"TVDb Error: Name not found from TVDb ID: {self.tvdb_id}")
 
-            self.poster_url = parse_page("//div[@id='artwork-posters']/div/div/a/@href")
-            self.background_url = parse_page("//div[@id='artwork-backgrounds']/div/div/a/@href")
+            self.poster_url = parse_page("//div[@id='artwork-posters']//a/@href")
+            self.background_url = parse_page("//div[@id='artwork-backgrounds']//a/@href")
+            self.logo_url = parse_page("//div[@id='artwork-clearlogo']//a/@href")
+            self.icon_url = parse_page("//div[@id='artwork-icons']//a/@href")
             if is_movie:
                 released = parse_page("//strong[text()='Released']/parent::li/span/text()[normalize-space()]")
             else:
                 released = parse_page("//strong[text()='First Aired']/parent::li/span/text()[normalize-space()]")
 
             try:
-                self.release_date = datetime.strptime(released, "%B %d, %Y") if released else released  # noqa
+                self.release_date = datetime.strptime(str(released), "%B %d, %Y") if released else released  # noqa
             except ValueError:
                 self.release_date = None
             self.status = parse_page("//strong[text()='Status']/parent::li/span/text()[normalize-space()]")
@@ -314,9 +318,7 @@ class TVDb:
     def get_request(self, tvdb_url):
         response = self.requests.get(tvdb_url, language=self.language)
         if response.status_code >= 400:
-            # 4xx — resource is gone from TVDb (e.g. series removed/merged). Raise
-            # NotFound so callers can handle it quietly. 5xx is a transient server
-            # error — raise TVDbServerError (not a Failed subclass) so tenacity retries it.
+            # 4xx = definitive "gone" (NotFound); 5xx = transient (TVDbServerError, retried by tenacity)
             if 400 <= response.status_code < 500:
                 raise NotFound(f"({response.status_code}) {response.reason}")
             raise TVDbServerError(f"({response.status_code}) {response.reason}")

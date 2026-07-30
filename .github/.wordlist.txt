@@ -3,7 +3,6 @@ accessmodes
 ACL
 addon
 addons
-AST
 adlib
 afi's
 Ahsoka
@@ -27,13 +26,18 @@ appdata
 appletv
 arrapi
 arrowverse
+AST
 atmos
 atres
 avenir
+Babygirl
+backoff
 bafta
 bambara
 bbfc
 bearlikelion
+Beetlejuice
+beetlejuice
 berlinale
 bestest
 bing
@@ -67,9 +71,12 @@ codec
 codecs
 collectionless
 commonsense
+comparator
+comparators
 config
 configs
 cov
+cour
 cpp
 cpt
 cpus
@@ -83,9 +90,11 @@ customizable
 customizations
 d'or
 dbader
+DBRepair
 de
 death
 deathday
+deduped
 deneuve
 desc
 dev
@@ -97,6 +106,7 @@ dir
 diskstation
 disneytoon
 dk
+DNS
 dockerfile
 dockerfiles
 dockerhub
@@ -127,6 +137,7 @@ fi
 filepath
 filetype
 filmin
+filmography
 flac
 flixpatrol
 fontawesome
@@ -159,6 +170,7 @@ homescreen
 homescreens
 hra
 html
+htmlcontent
 http
 https
 hu
@@ -177,6 +189,7 @@ integrations
 ints
 io
 isort
+iterable
 iteratively
 itvx
 ja
@@ -206,7 +219,9 @@ kometautils
 kubernetes
 kuesel
 launchd
+Lavagirl
 letterboxd
+Letterboxd's
 letterboxdpy
 LF
 lgbtq
@@ -217,6 +232,7 @@ linux
 linuxserver
 linuxserver's
 localhost
+lookups
 looper
 lossy
 lsio
@@ -319,15 +335,17 @@ posix
 powershell
 pre
 precommit
-psd
 prek
 prepend
 prepended
 preroll
 PRs
+psd
 psutil
 puid
 py
+pyright
+pyright's
 pyspelling
 pytest
 Pytest
@@ -337,6 +355,7 @@ qnap
 quickstart
 radarr
 rainbowindent
+ratcheting
 razzie
 razzies
 reacher
@@ -374,6 +393,7 @@ sdtv
 semver
 setuptools
 sha
+Sharkboy
 shawshank
 shoutout
 Simkl
@@ -386,6 +406,7 @@ spartacus
 Springland
 ssl
 stderr
+stdlib
 stdout
 stevenlu
 stevenlu's
@@ -418,11 +439,14 @@ tmdb
 tmdb's
 tmdbapi
 tmdbapis
+tmp
 toastjuh
 toc
 todo
 tomatoesaudience
+TomatoFresh
 tomatometer
+TomatoRotten
 tooltip
 tooltips
 traceback
@@ -451,8 +475,11 @@ unionfs
 unittest
 unmanaged
 unplayed
+unprioritised
 unraid
 unresolvable
+unreviewed
+untyped
 uri
 url
 urls
@@ -472,6 +499,7 @@ vscodium
 vv
 wachowski
 WAF
+WAL
 walkthrough
 walkthroughs
 watchlist
@@ -492,6 +520,7 @@ xmen
 xxxxxxx
 xyz
 yaml
+yamtrack
 yml
 yourname
 yozora

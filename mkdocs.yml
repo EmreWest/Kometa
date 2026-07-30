@@ -192,6 +192,7 @@ nav:
       - Radarr: config/radarr.md
       - Sonarr: config/sonarr.md
       - Trakt: config/trakt.md
+      - YamTrack: config/yamtrack.md
       - MyAnimeList: config/myanimelist.md
       - Kometa Utilities Authentication: config/authentication.md
       - Webhooks: config/webhooks.md
@@ -395,9 +396,14 @@ nav:
       - MDBList:
         - Overview: files/builders/mdblist/overview.md
         - List: files/builders/mdblist/list.md
+      - YamTrack:
+        - Overview: files/builders/yamtrack/overview.md
+        - List: files/builders/yamtrack/list.md
+        - Tracked: files/builders/yamtrack/tracked.md
       - Letterboxd:
         - Overview: files/builders/letterboxd/overview.md
         - List: files/builders/letterboxd/list.md
+        - Discovery: files/builders/letterboxd/discovery.md
         - User Films: files/builders/letterboxd/user_films.md
         - User Reviews: files/builders/letterboxd/user_reviews.md
       - ICheckMovies:

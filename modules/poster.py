@@ -11,7 +11,6 @@ logger = util.logger
 
 class ImageData:
     def __init__(self, attribute, location, prefix="", image_type="poster", is_url=True, compare=None):
-        file_stat = None if is_url else os.stat(location)
         self.attribute = attribute
         self.location = location
         self.prefix = prefix
@@ -20,7 +19,13 @@ class ImageData:
         self.is_logo = image_type == "logo"
         self.is_square_art = image_type == "square_art"
         self.is_url = is_url
-        self.compare = compare if compare else location if is_url else f"{os.path.abspath(location)}:{file_stat.st_size}:{file_stat.st_mtime_ns}"
+        if compare:
+            self.compare = compare
+        elif is_url:
+            self.compare = location
+        else:
+            file_stat = os.stat(location)
+            self.compare = f"{os.path.abspath(location)}:{file_stat.st_size}:{file_stat.st_mtime_ns}"
         self.message = f"{prefix}{image_type} to [{'URL' if is_url else 'File'}] {location}"
 
     def __str__(self):
@@ -44,7 +49,7 @@ class ImageBase:
         if attr not in self.methods or not self.data[self.methods[attr]]:
             if required:
                 raise Failed(f"Posters Error: {attr} not found or is blank")
-            return None
+            return None, None
         file_data = self.data[self.methods[attr]]
         if isinstance(file_data, list):
             file_data = file_data[0]
@@ -175,17 +180,21 @@ class Component(ImageBase):
             raise Failed("Posters Error: An image or text is required for each component")
 
     def apply_vars(self, item_vars):
+        if self.text is None:
+            return
         for var_key, var_data in item_vars.items():
             self.text = self.text.replace(f"<<{var_key}>>", str(var_data))
 
     def adjust_text_width(self, max_width):
+        if self.text is None:
+            return
         lines = []
         for line in self.text.split("\n"):
             for word in line.split(" "):
                 word_length = self.draw.textlength(word, font=self.font)
                 while word_length > max_width:
                     self.font_size -= 1
-                    self.font = ImageFont.truetype(self.font_name, self.font_size)
+                    self.font = ImageFont.truetype(self.font_name, self.font_size)  # type: ignore[arg-type]
                     word_length = self.draw.textlength(word, font=self.font)
         for line in self.text.split("\n"):
             line_length = self.draw.textlength(line, font=self.font)
@@ -273,12 +282,14 @@ class Component(ImageBase):
                 image_width = self.image_width
                 image = image.resize((image_width, image_height), Image.Resampling.LANCZOS)  # noqa
             if self.image_color:
-                r, g, b = self.image_color
+                r, g, b = self.image_color  # type: ignore[misc]
                 pixels = image.load()
+                if pixels is None:
+                    raise Failed(f"Posters Error: failed to load pixels from image: {self.image}")
                 for x in range(image_width):
                     for y in range(image_height):
-                        if pixels[x, y][3] > 0:  # noqa
-                            pixels[x, y] = (r, g, b, pixels[x, y][3])  # noqa
+                        if pixels[x, y][3] > 0:  # type: ignore[index] # noqa
+                            pixels[x, y] = (r, g, b, pixels[x, y][3])  # type: ignore[index] # noqa
         else:
             image, image_width, image_height = None, 0, 0
         if self.text is not None:
@@ -301,7 +312,7 @@ class Component(ImageBase):
             generated_layer = Image.new("RGBA", canvas_box, (255, 255, 255, 0))
             drawing = ImageDraw.Draw(generated_layer)
             if self.has_back:
-                cords = (start_x - self.back_padding, start_y - self.back_padding, start_x + back_width + self.back_padding, start_y + back_height + self.back_padding)
+                cords = (start_x - self.back_padding, start_y - self.back_padding, start_x + back_width + self.back_padding, start_y + back_height + self.back_padding)  # type: ignore[operator]
                 if self.back_radius:
                     drawing.rounded_rectangle(cords, fill=self.back_color, outline=self.back_line_color, width=self.back_line_width, radius=self.back_radius)
                 else:
@@ -309,13 +320,18 @@ class Component(ImageBase):
 
             main_x, main_y = main_point
             if self.back_height and self.back_align in ["left", "right", "center", "bottom"]:
-                main_y = start_y + (back_height - box_height) // (1 if self.back_align == "bottom" else 2)
+                main_y = start_y + (back_height - box_height) // (1 if self.back_align == "bottom" else 2)  # type: ignore[operator]
             if self.back_width and self.back_align in ["top", "bottom", "center", "right"]:
-                main_x = start_x + (back_width - box_width) // (1 if self.back_align == "right" else 2)
+                main_x = start_x + (back_width - box_width) // (1 if self.back_align == "right" else 2)  # type: ignore[operator]
 
             addon_x = None
             addon_y = None
             if self.text is not None and self.image:
+                # text_width and text_height are guaranteed set by the
+                # `if self.text is not None:` block above; restate the
+                # invariant for the type checker.
+                if text_width is None or text_height is None:
+                    raise Failed("Posters Error: text dimensions not computed")
                 addon_x = main_x
                 addon_y = main_y
                 if self.addon_position == "left":
