@@ -818,6 +818,13 @@ class ConfigFile:
             "asset_depth": check_for_attribute(self.data, "asset_depth", parent="settings", var_type="int", default=0),
             "create_asset_folders": check_for_attribute(self.data, "create_asset_folders", parent="settings", var_type="bool", default=False),
             "prioritize_assets": check_for_attribute(self.data, "prioritize_assets", parent="settings", var_type="bool", default=False),
+            "normalize_emby_collection_posters": check_for_attribute(
+                self.data,
+                "normalize_emby_collection_posters",
+                parent="settings",
+                var_type="bool",
+                default=False,
+            ),
             "dimensional_asset_rename": check_for_attribute(self.data, "dimensional_asset_rename", parent="settings", var_type="bool", default=False),
             "download_url_assets": check_for_attribute(self.data, "download_url_assets", parent="settings", var_type="bool", default=False),
             "show_missing_assets": check_for_attribute(self.data, "show_missing_assets", parent="settings", var_type="bool", default=True),
@@ -875,7 +882,13 @@ class ConfigFile:
                 int_max=100,
             ),
             "overlay_refresh_emby_items": check_for_attribute(self.data, "overlay_refresh_emby_items", parent="settings", var_type="bool", default=False),
-            "server_type": check_for_attribute(self.data, "server_type", parent="settings", test_list=["plex", "emby"], default="plex"),
+            "server_type": check_for_attribute(
+                self.data,
+                "server_type",
+                parent="settings",
+                test_list={"plex": "Plex", "emby": "Emby"},
+                default="plex",
+            ),
             "assets_for_all": check_for_attribute(
                 self.data,
                 "assets_for_all",
@@ -1514,6 +1527,15 @@ class ConfigFile:
                     parent="settings",
                     var_type="bool",
                     default=self.general["prioritize_assets"],
+                    do_print=False,
+                    save=False,
+                )
+                params["normalize_emby_collection_posters"] = check_for_attribute(
+                    lib,
+                    "normalize_emby_collection_posters",
+                    parent="settings",
+                    var_type="bool",
+                    default=self.general["normalize_emby_collection_posters"],
                     do_print=False,
                     save=False,
                 )

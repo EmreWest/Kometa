@@ -1530,7 +1530,7 @@ class EmbyServer:
         fields = (
             "Budget,Chapters,DateCreated,Genres,HomePageUrl,IndexOptions,MediaStreams,"
             "Overview,ParentId,Path,People,ProductionYear,PremiereDate,ProviderIds,LockedFields,"
-            "PrimaryImageAspectRatio,Revenue,SortName,Studios,Taglines,CriticRating,"
+            "PrimaryImageAspectRatio,Revenue,SortName,ForcedSortName,Studios,Taglines,CriticRating,"
             "CommunityRating,OfficialRating,Tags,TagItems,RunTimeTicks,ProductionLocations,"
             "MediaSources,OriginalTitle"
         )

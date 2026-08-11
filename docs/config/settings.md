@@ -687,6 +687,30 @@ The available setting attributes which can be set at each level are outlined bel
         ```
 
 
+??? blank "`normalize_emby_collection_posters` - Used to normalize Emby collection posters.<a class="headerlink" href="#normalize-emby-collection-posters" title="Permanent link">¶</a>"
+
+    <div id="normalize-emby-collection-posters" />Set `normalize_emby_collection_posters` to true to fit Emby collection Primary posters on a centered 1000x1500 canvas while preserving the complete image and its aspect ratio.
+
+    This setting only applies to Emby collections. It does not affect Plex or movie, show, season, or episode posters. Existing local asset priority and Logo artwork remain unchanged.
+
+    <hr style="margin: 0px;">
+
+    **Attribute:** `normalize_emby_collection_posters`
+
+    **Levels with this Attribute:** Global/Library
+
+    **Accepted Values:** `true` or `false`.
+
+    **Default Value:** `false`
+
+    ???+ example "Example"
+
+        ```yaml
+        settings:
+          normalize_emby_collection_posters: true
+        ```
+
+
 ??? blank "`prioritize_assets` - Used to prioritize `asset_directory` images over all other images types.<a class="headerlink" href="#prioritize-assets" title="Permanent link">¶</a>"
 
     <div id="prioritize-assets" />When determining which image to use on an item prioritize the `asset_directory` over all other image sources.

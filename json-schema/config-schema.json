@@ -1980,6 +1980,10 @@
           "description": "Used to prioritize asset_directory images over all other images types.\nWhen determining which image to use on an item prioritize the asset_directory over all other images types.",
           "type": "boolean"
         },
+        "normalize_emby_collection_posters": {
+          "description": "Normalize Emby collection Primary posters to a centered 1000x1500 canvas without cropping.",
+          "type": "boolean"
+        },
         "dimensional_asset_rename": {
           "description": "Used to automatically rename asset files based on their dimensions.\nWhilst searching for assets, scan the folders within the asset_directory and if an asset poster (i.e. /ASSET_NAME/poster.ext) was not found, rename the first image found that has a height greater than or equal to its width to poster.ext. If an asset background (i.e. /ASSET_NAME/background.ext), rename the first image found that has a width greater than its height to background.ext.",
           "type": "boolean"

@@ -5220,10 +5220,22 @@ class CollectionBuilder:
             item_vars = {"title": self.name, "titleU": self.name.upper(), "titleL": self.name.lower()}  # type: ignore[union-attr]
             self.collection_poster = self.collection_poster.save(item_vars)
 
-        if self.collection_poster or self.collection_background or self.collection_logo or self.collection_square_art:
-            pu, bu, lu, sau = self.library.upload_images(self.obj, poster=self.collection_poster, background=self.collection_background, logo=self.collection_logo, square_art=self.collection_square_art)
-            if pu or bu or lu or sau:
-                updated_details.append("Image")
+        normalized_poster_path = None
+        if self.collection_poster and not self.playlist and self.library.is_emby and self.library.normalize_emby_collection_posters:
+            try:
+                self.collection_poster, normalized_poster_path = self.library.prepare_collection_poster(self.collection_poster)
+            except Failed as e:
+                logger.warning(e)
+                self.collection_poster = None
+
+        try:
+            if self.collection_poster or self.collection_background or self.collection_logo or self.collection_square_art:
+                pu, bu, lu, sau = self.library.upload_images(self.obj, poster=self.collection_poster, background=self.collection_background, logo=self.collection_logo, square_art=self.collection_square_art)
+                if pu or bu or lu or sau:
+                    updated_details.append("Image")
+        finally:
+            if normalized_poster_path and os.path.exists(normalized_poster_path):
+                os.remove(normalized_poster_path)
 
         if clean_temp:
             code_base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

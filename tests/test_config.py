@@ -310,6 +310,7 @@ plex:
 """
         cf = make_config(tmp_path, config_yaml=config)
         assert cf.general["cache"] is False
+        assert cf.general["normalize_emby_collection_posters"] is False
 
 
 # ═══════════════════════════════════════════════════════════════════════

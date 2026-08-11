@@ -1,14 +1,16 @@
 import os
 import random
 import re
+import tempfile
 import time
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from urllib import parse
 # from importlib.metadata import pass_none
 from xml.etree.ElementTree import ParseError
 
 import requests
-from PIL import Image
+from PIL import Image, ImageOps
 from plexapi.audio import Artist, Album, Track
 from plexapi.exceptions import BadRequest, Unauthorized
 from plexapi.playlist import Playlist
@@ -25,6 +27,27 @@ from urllib.parse import unquote, parse_qsl, parse_qs, urlparse
 logger = util.logger
 
 asset_image_extensions = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def normalize_collection_poster(image, target_size=(1000, 1500)):
+    """Fit a collection image on a poster canvas without cropping or distortion."""
+    target_width, target_height = target_size
+    if target_width <= 0 or target_height <= 0:
+        raise ValueError("target_size must contain positive dimensions")
+
+    source = ImageOps.exif_transpose(image)
+    has_alpha = source.mode in ("RGBA", "LA") or "transparency" in source.info
+    mode = "RGBA" if has_alpha else "RGB"
+    source = source.convert(mode)
+    fitted = ImageOps.contain(source, target_size, method=Image.Resampling.LANCZOS)
+    background = (0, 0, 0, 0) if has_alpha else (0, 0, 0)
+    canvas = Image.new(mode, target_size, background)
+    offset = ((target_width - fitted.width) // 2, (target_height - fitted.height) // 2)
+    if has_alpha:
+        canvas.alpha_composite(fitted, offset)
+    else:
+        canvas.paste(fitted, offset)
+    return canvas
 
 
 def get_asset_image_matches(file_filter, file_name):
@@ -1268,8 +1291,11 @@ class Emby(Library):
             update_payload["Name"] = title
         if summary is not None and str(current_item.get("Overview")) != str(summary):
             update_payload["Overview"] = summary
-        if sort_title is not None and str(current_item.get("SortName")) != str(sort_title):
-            update_payload["ForcedSortName"] = sort_title
+        if sort_title is not None:
+            effective_sort_title = current_item.get("SortName")
+            forced_sort_title = current_item.get("ForcedSortName")
+            if str(effective_sort_title) != str(sort_title) or (forced_sort_title is not None and str(forced_sort_title) != str(sort_title)):
+                update_payload["ForcedSortName"] = sort_title
         if content_rating is not None and str(current_item.get("OfficialRating")) != str(content_rating):
             update_payload["OfficialRating"] = content_rating
 
@@ -3795,6 +3821,41 @@ class Emby(Library):
             return self.EmbyServer.set_image_smart(item.ratingKey, url, image_type="Primary")
         else:
             return self.EmbyServer.set_image_smart(item.ratingKey, image.location, image_type="Primary")
+
+    def prepare_collection_poster(self, image, target_size=(1000, 1500)):
+        """Normalize one selected collection poster and return it with a cleanup path."""
+        if image is None or not self.normalize_emby_collection_posters:
+            return image, None
+
+        temp_path = None
+        try:
+            if image.is_url:
+                response = self.config.Requests.get_image(image.location)
+                source = Image.open(BytesIO(response.content))
+            else:
+                source = Image.open(image.location)
+            with source:
+                normalized = normalize_collection_poster(source, target_size=target_size)
+                temp_file = tempfile.NamedTemporaryFile(prefix="kometa-emby-collection-", suffix=".png", delete=False)
+                temp_path = temp_file.name
+                temp_file.close()
+                normalized.save(temp_path, format="PNG")
+                normalized.close()
+        except (OSError, ValueError, Failed) as err:
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+            raise Failed(f"Collection Poster Error: Failed to normalize {image.location}: {err}")
+
+        prepared = ImageData(
+            image.attribute,
+            temp_path,
+            prefix=image.prefix,
+            image_type="poster",
+            is_url=False,
+            compare=f"{image.compare}:emby-collection-poster:{target_size[0]}x{target_size[1]}",
+        )
+        prepared.message = f"{image.message} normalized to {target_size[0]}x{target_size[1]}"
+        return prepared, temp_path
 
     def create_smart_collection(self, title, smart_type, uri_args, ignore_blank_results, minimum = None):
 

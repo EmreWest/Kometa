@@ -11,6 +11,7 @@ Set the media server type in `settings`:
 ```yaml
 settings:
   server_type: emby
+  normalize_emby_collection_posters: true
 ```
 
 Add an `emby` block at the root of `config.yml`, or inside a library when a library needs different connection details:
@@ -45,5 +46,7 @@ settings:
 ```
 
 The `overlay_refresh_emby_items` setting tells Kometa to refresh Emby items after overlay files are written so changed artwork can be picked up sooner.
+
+Set `normalize_emby_collection_posters` to `true` to fit every selected Emby collection poster on a centered 1000x1500 canvas without cropping or changing its aspect ratio. This only affects collection Primary posters. Local assets and `prioritize_assets` keep their normal priority; logos remain separate Logo artwork.
 
 To find the Emby user ID, open the Emby dashboard, go to Users, select the user, and copy the `userId` value from the browser URL.

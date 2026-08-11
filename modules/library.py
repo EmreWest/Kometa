@@ -74,6 +74,7 @@ class Library(ABC):
         self.create_asset_folders = params["create_asset_folders"]
         self.dimensional_asset_rename = params["dimensional_asset_rename"]
         self.prioritize_assets = params["prioritize_assets"]
+        self.normalize_emby_collection_posters = params.get("normalize_emby_collection_posters", False)
         self.download_url_assets = params["download_url_assets"]
         self.show_missing_season_assets = params["show_missing_season_assets"]
         self.show_missing_episode_assets = params["show_missing_episode_assets"]

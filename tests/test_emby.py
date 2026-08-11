@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
-from modules.emby import Emby
+from PIL import Image
+
+from modules.emby import Emby, normalize_collection_poster
 from modules.emby_server import EmbyServer
 from modules.poster import ImageData
 from tests.conftest import FakeLogger
@@ -80,6 +83,46 @@ def test_validate_image_size_rejects_corrupt_local_image(tmp_path, monkeypatch):
     assert fake_logger.error_messages
 
 
+def test_normalize_collection_poster_contains_wide_transparent_image():
+    source = Image.new("RGBA", (400, 100), color=(255, 0, 0, 128))
+
+    result = normalize_collection_poster(source)
+
+    assert result.size == (1000, 1500)
+    assert result.mode == "RGBA"
+    assert result.getchannel("A").getbbox() == (0, 625, 1000, 875)
+    assert result.getpixel((500, 750)) == (255, 0, 0, 128)
+    assert result.getpixel((500, 100)) == (0, 0, 0, 0)
+
+
+def test_normalize_collection_poster_scales_two_by_three_image_to_target():
+    source = Image.new("RGB", (200, 300), color=(255, 0, 0))
+
+    result = normalize_collection_poster(source)
+
+    assert result.size == (1000, 1500)
+    assert result.getbbox() == (0, 0, 1000, 1500)
+
+
+def test_prepare_collection_poster_preserves_selected_asset_identity(tmp_path):
+    source_path = tmp_path / "poster.jpg"
+    Image.new("RGB", (800, 400), color=(255, 0, 0)).save(source_path)
+    source = ImageData("asset_directory", str(source_path), prefix="Collection's ", is_url=False)
+    emby = Emby.__new__(Emby)
+    emby.normalize_emby_collection_posters = True
+
+    prepared, cleanup_path = emby.prepare_collection_poster(source)
+    try:
+        with Image.open(prepared.location) as normalized:
+            assert normalized.size == (1000, 1500)
+        assert prepared.attribute == "asset_directory"
+        assert prepared.is_poster is True
+        assert prepared.is_logo is False
+        assert prepared.compare == f"{source.compare}:emby-collection-poster:1000x1500"
+    finally:
+        os.remove(cleanup_path)
+
+
 def test_find_item_assets_returns_six_values_without_square_art(tmp_path):
     emby = Emby.__new__(Emby)
     emby.asset_directory = [str(tmp_path)]
@@ -155,3 +198,91 @@ def test_emby_provider_ids_reject_numeric_imdb_id(monkeypatch):
 
     assert server.get_provider_ids(item) == [None, None, 295613]
     assert any("invalid IMDb ID '295613'" in message for message in fake_logger.warning_messages)
+
+
+class CollectionMetadataServer:
+    def __init__(self, items):
+        self.items = items
+        self.update_calls = []
+        self.create_calls = []
+
+    def get_item(self, item_id):
+        return self.items[str(item_id)]
+
+    def update_item(self, item_id, payload):
+        item = self.items[str(item_id)]
+        item.update(payload)
+        if "ForcedSortName" in payload:
+            item["SortName"] = payload["ForcedSortName"]
+        self.update_calls.append((str(item_id), dict(payload)))
+        return SimpleNamespace(status_code=204)
+
+    def invalidate_collection_cache(self, *args):
+        pass
+
+    def create_collection(self, *args, **kwargs):
+        self.create_calls.append((args, kwargs))
+        raise AssertionError("existing collections must not be recreated")
+
+
+def _collection_metadata_emby(specs):
+    items = {
+        str(index): {
+            "Id": str(index),
+            "Name": display_name,
+            "SortName": display_name,
+            "Overview": f"Summary {index}",
+            "ImageTags": {"Primary": f"poster-{index}"},
+        }
+        for index, (display_name, _) in enumerate(specs, start=1)
+    }
+    server = CollectionMetadataServer(items)
+    emby = Emby.__new__(Emby)
+    emby.EmbyServer = server
+    collections = [
+        SimpleNamespace(
+            ratingKey=str(index),
+            title=display_name,
+            titleSort=display_name,
+            summary=f"Summary {index}",
+            contentRating=None,
+            _items=[f"member-{index}"],
+        )
+        for index, (display_name, _) in enumerate(specs, start=1)
+    ]
+    return emby, server, collections
+
+
+def test_emby_collection_sort_names_keep_separator_and_section_order():
+    specs = [
+        ("🎥 Filme Rangliste Sammlungen", "!020_!Rangliste Sammlungen"),
+        ("🎥 Filme IMDb Beliebt", "!020_010IMDb Beliebt"),
+        ("🎥 Filme Genre Sammlungen", "!030_!Genre Sammlungen"),
+        ("🎥 Filme Action", "!030_010Action"),
+    ]
+    emby, _, collections = _collection_metadata_emby(specs)
+
+    for collection, (_, sort_title) in zip(collections, specs):
+        assert emby.update_collection_metadata(collection, sort_title=sort_title) is True
+
+    assert [collection.title for collection in sorted(collections, key=lambda value: value.titleSort)] == [name for name, _ in specs]
+    assert [collection.titleSort for collection in collections] == [sort_title for _, sort_title in specs]
+    assert all("🎥 Filme" not in collection.titleSort for collection in collections)
+
+
+def test_existing_emby_collection_sort_update_is_in_place_and_idempotent():
+    specs = [("🎥 Filme IMDb Beliebt", "!020_010IMDb Beliebt")]
+    emby, server, collections = _collection_metadata_emby(specs)
+    collection = collections[0]
+    original_members = collection._items
+    original_artwork = dict(server.items["1"]["ImageTags"])
+
+    assert emby.update_collection_metadata(collection, sort_title=specs[0][1]) is True
+    assert emby.update_collection_metadata(collection, sort_title=specs[0][1]) is True
+
+    assert server.update_calls == [("1", {"ForcedSortName": "!020_010IMDb Beliebt"})]
+    assert server.create_calls == []
+    assert collection.ratingKey == "1"
+    assert collection._items is original_members
+    assert server.items["1"]["ImageTags"] == original_artwork
+    assert server.items["1"]["SortName"] == "!020_010IMDb Beliebt"
