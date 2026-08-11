@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import modules.builder  # noqa: F401
+from modules.util import Failed
 from tests.conftest import FakeLogger, FakeResponse
 
 
@@ -29,3 +30,8 @@ class TestOMDb:
         adapter.requests.get.return_value = FakeResponse({"Title": "T", "Year": "2023", "imdbID": "tt1", "Response": "True"}, 200)
         r = adapter.get_omdb("tt1", ignore_cache=True)
         assert r.title == "T"
+
+    def test_numeric_imdb_id_is_rejected_without_request(self, adapter):
+        with pytest.raises(Failed, match="Invalid IMDb ID '295613'"):
+            adapter.get_omdb("295613", ignore_cache=True)
+        adapter.requests.get.assert_not_called()

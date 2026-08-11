@@ -69,6 +69,8 @@ class OMDb:
         self.get_omdb("tt0080684", ignore_cache=True)
 
     def get_omdb(self, imdb_id, ignore_cache=False):
+        if not util.valid_imdb_id(imdb_id):
+            raise Failed(f"OMDb Error: Invalid IMDb ID '{imdb_id}'; request skipped")
         expired = None
         if self.cache and not ignore_cache:
             omdb_dict, expired = self.cache.query_omdb(imdb_id, self.expiration)

@@ -45,6 +45,34 @@ class TestExceptionHierarchy:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.parametrize("value", ["1", 1, "295613"])
+def test_positive_provider_id_accepts_positive_integers(value):
+    from modules.util import positive_int
+
+    assert positive_int(value) == int(value)
+
+
+@pytest.mark.parametrize("value", [None, "", "abc", 0, -1])
+def test_positive_provider_id_rejects_invalid_values(value):
+    from modules.util import positive_int
+
+    assert positive_int(value) is None
+
+
+@pytest.mark.parametrize("value", ["tt1", "tt1234567"])
+def test_valid_imdb_id_accepts_tt_prefix(value):
+    from modules.util import valid_imdb_id
+
+    assert valid_imdb_id(value)
+
+
+@pytest.mark.parametrize("value", [None, 295613, "295613", "tt", "TT123"])
+def test_valid_imdb_id_rejects_non_imdb_values(value):
+    from modules.util import valid_imdb_id
+
+    assert not valid_imdb_id(value)
+
+
 class TestCheckNum:
     def test_int_string(self):
         from modules.util import check_num

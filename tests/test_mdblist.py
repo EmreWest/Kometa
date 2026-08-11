@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 import modules.builder  # noqa: F401
-from modules.util import Failed
+from modules.util import Failed, LimitReached
 from tests.conftest import FakeLogger
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -129,3 +130,36 @@ class TestMDBList:
         adapter._request = MagicMock(side_effect=Failed("Invalid API key"))
         with pytest.raises(Failed, match="Invalid"):
             adapter.add_key("bad-key", 30)
+
+    def test_request_200(self, adapter, monkeypatch):
+        monkeypatch.setattr("modules.mdblist.time.sleep", lambda _: None)
+        adapter.requests.get.return_value = SimpleNamespace(status_code=200, json=lambda: [{"id": 1}], headers={}, text="ok")
+        assert adapter._request("https://api.mdblist.com/lists/u/list/items/", list_name="u/list")[0] == [{"id": 1}]
+
+    def test_list_404_has_actionable_message(self, adapter, monkeypatch):
+        from modules.mdblist import ListNotFound
+
+        monkeypatch.setattr("modules.mdblist.time.sleep", lambda _: None)
+        adapter.requests.get.return_value = SimpleNamespace(status_code=404, headers={}, text='{"error":"List Not found"}')
+        with pytest.raises(ListNotFound, match="List 'k0meta/verifiedhotshows' does not exist"):
+            adapter._request("https://api.mdblist.com/lists/k0meta/verifiedhotshows/items/", list_name="k0meta/verifiedhotshows")
+
+    @pytest.mark.parametrize(
+        ("status", "message", "exception"),
+        [
+            (401, "Unauthorized", Failed),
+            (403, "Forbidden", Failed),
+            (429, "Rate Limit", LimitReached),
+            (500, "Server Error", Failed),
+        ],
+    )
+    def test_request_statuses_are_distinct(self, adapter, monkeypatch, status, message, exception):
+        monkeypatch.setattr("modules.mdblist.time.sleep", lambda _: None)
+        adapter.requests.get.return_value = SimpleNamespace(status_code=status, headers={"Retry-After": "3"}, text="error")
+        with pytest.raises(exception, match=message):
+            adapter._request("https://api.mdblist.com/test")
+
+    def test_numeric_imdb_id_is_rejected_without_request(self, adapter):
+        with pytest.raises(Failed, match="Invalid IMDb ID '295613'"):
+            adapter.get_imdb("295613")
+        adapter.requests.get.assert_not_called()

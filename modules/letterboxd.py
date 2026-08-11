@@ -16,6 +16,10 @@ from modules.util import Failed
 
 logger = util.logger
 
+
+class NonMovieEntry(Failed):
+    pass
+
 sort_options = {
     "name": "by/name/",
     "popularity": "by/popular/",
@@ -487,7 +491,9 @@ class Letterboxd:
                     if tmdb_type == "movie":
                         return tmdb_id
                     else:
-                        logger.warning(f"Letterboxd Warning: TMDb link for {slug_path} is for a TV show, not a movie; ignoring TMDb ID {tmdb_id} from link.")
+                        title = getattr(movie, "title", None) or self._slug_path(slug_path).strip("/").split("/")[-1]
+                        logger.warning(f"Letterboxd Warning: Skipping non-movie entry '{title}': TMDb identifies it as TV series {tmdb_id}")
+                        raise NonMovieEntry
 
         raise Failed(f"Letterboxd Error: TMDb Movie ID not found at {base_url}{self._slug_path(slug_path)} item is type {tmdb_type if 'tmdb_type' in locals() else 'unknown'} with tmdb_id {tmdb_id if 'tmdb_id' in locals() else 'unknown'}.")
 
@@ -913,6 +919,8 @@ class Letterboxd:
                     logger.ghost(f"Finding TMDb ID {i}/{total_items}")
                     try:
                         tmdb_id = self._tmdb(slug, language)
+                    except NonMovieEntry:
+                        continue
                     except Failed as e:
                         logger.error(e)
                         continue
@@ -953,6 +961,8 @@ class Letterboxd:
                 logger.ghost(f"Finding TMDb ID {i}/{len(items)}")
                 try:
                     tmdb_id = self._tmdb(slug, language)
+                except NonMovieEntry:
+                    continue
                 except Failed as e:
                     logger.error(e)
                     continue

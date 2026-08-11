@@ -6,6 +6,10 @@ from modules.util import Failed, LimitReached
 
 logger = util.logger
 
+
+class ListNotFound(Failed):
+    pass
+
 # --- REQUIRED MODULE ATTRIBUTES ---
 builders = ["mdblist_list"]
 sort_names = [
@@ -147,7 +151,7 @@ class MDBList:
     def has_key(self):
         return self.apikey is not None
 
-    def _request(self, url, params=None):
+    def _request(self, url, params=None, list_name=None):
         final_params = {"apikey": self.apikey}
         if params:
             final_params.update(params)
@@ -158,7 +162,18 @@ class MDBList:
         response = self.requests.get(url, params=final_params)
 
         if response.status_code != 200:
-            raise Failed(f"MDBList Error: {response.status_code} - {response.text}")
+            if response.status_code == 404 and list_name:
+                raise ListNotFound(f"MDBList Error: List '{list_name}' does not exist or is no longer accessible")
+            if response.status_code == 401:
+                raise Failed("MDBList Error: HTTP 401 Unauthorized; check the API key")
+            if response.status_code == 403:
+                raise Failed("MDBList Error: HTTP 403 Forbidden; access denied")
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After", "unknown")
+                raise LimitReached(f"MDBList Error: HTTP 429 Rate Limit; Retry-After={retry_after}")
+            if response.status_code >= 500:
+                raise Failed(f"MDBList Error: HTTP {response.status_code} Server Error; service unavailable")
+            raise Failed(f"MDBList Error: HTTP {response.status_code} - {response.text}")
 
         json_data = response.json()
         if isinstance(json_data, dict) and json_data.get("response") is False:
@@ -174,6 +189,8 @@ class MDBList:
         is_movie = media_type == "movie"
 
         if media_provider == "imdb":
+            if not util.valid_imdb_id(media_id):
+                raise Failed(f"MDBList Error: Invalid IMDb ID '{media_id}'; request skipped")
             key = media_id
         elif media_provider == "tmdb":
             key = f"{'tm' if is_movie else 'ts'}{media_id}"
@@ -254,7 +271,7 @@ class MDBList:
         # X-Total-Items / X-Matched-Items headers return the per-page count, not the global total.
         total_count = 0
         try:
-            meta_data, _ = self._request(meta_url)
+            meta_data, _ = self._request(meta_url, list_name=list_path)
             if isinstance(meta_data, list) and meta_data:
                 meta_data = meta_data[0]
             if isinstance(meta_data, dict):
@@ -274,7 +291,7 @@ class MDBList:
             items = []
 
             try:
-                page_data, headers = self._request(items_url, params=params)
+                page_data, headers = self._request(items_url, params=params, list_name=list_path)
                 has_more = headers.get("X-Has-More", "false").lower() == "true"
 
                 items = []
@@ -289,6 +306,8 @@ class MDBList:
 
                 elif isinstance(page_data, list):
                     items = page_data
+            except (ListNotFound, LimitReached):
+                raise
             except Exception as e:
                 raise Failed(f"MDBList Error: Could not fetch list items: {e}")
 

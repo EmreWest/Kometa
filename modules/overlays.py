@@ -14,6 +14,18 @@ from modules.util import Failed, FilterFailed, LimitReached, MappingConvertError
 logger = util.logger
 
 
+class BlankOverlayValue(Failed):
+    pass
+
+
+def _required_rating_value(value, variable_name, item_title, ignore_blank_results):
+    if value is None or value == "":
+        if ignore_blank_results:
+            raise BlankOverlayValue(f"Overlay Skip: {variable_name} unavailable for {item_title}; ignore_blank_results=True")
+        raise OverlayError(f"Overlay Error: No '<<{variable_name}>>' found")
+    return value
+
+
 class Overlays:
     def __init__(self, config, library):
         self.config = config
@@ -470,9 +482,11 @@ class Overlays:
                                             sub_items = [ep.duration for ep in sub_items if hasattr(ep, "duration") and ep.duration]  # type: ignore[union-attr]
                                             actual_value = sum(sub_items)
                                         else:
-                                            if not hasattr(item, actual_attr) or getattr(item, actual_attr) is None:
+                                            actual_value = getattr(item, actual_attr, None)
+                                            if format_var in ["user_rating", "critic_rating", "audience_rating"]:
+                                                actual_value = _required_rating_value(actual_value, format_var, item_title, text_overlay.ignore_blank_results)
+                                            elif actual_value is None:
                                                 raise OverlayError(f"Overlay Error: No '{full_text}' found")
-                                            actual_value = getattr(item, actual_attr)
                                             if format_var == "versions":
                                                 actual_value = len(actual_value)
                                         if self.cache and format_var not in overlay.rating_sources:
@@ -532,6 +546,10 @@ class Overlays:
                                             image_box = current_overlay.image.size if current_overlay.image else None
                                             try:
                                                 rendered_text = get_text(current_overlay)
+                                            except BlankOverlayValue as e:
+                                                logger.debug(f"  {e}")
+                                                unresolved.add(current_overlay.mapping_name)
+                                                continue
                                             except Failed as e:
                                                 logger.warning(f"  {e}")
                                                 unresolved.add(current_overlay.mapping_name)
@@ -570,6 +588,10 @@ class Overlays:
                                             image_box = current_overlay.image.size if current_overlay.image else None
                                             try:
                                                 rendered_text = get_text(current_overlay)
+                                            except BlankOverlayValue as e:
+                                                logger.debug(f"  {e}")
+                                                unresolved.add(current_overlay.mapping_name)
+                                                continue
                                             except Failed as e:
                                                 logger.warning(f"  {e}")
                                                 unresolved.add(current_overlay.mapping_name)
@@ -653,6 +675,7 @@ class Overlays:
                     logger.separator(f"Gathering Items for {k} Overlay", space=False, border=False)
 
                     prop_name = builder.overlay.mapping_name
+                    builder.overlay.ignore_blank_results = builder.ignore_blank_results
                     properties[prop_name] = builder.overlay
 
                     builder.display_filters()

@@ -154,13 +154,18 @@ class Convert:
         if self.cache and is_movie:
             cache_id, expired = self.cache.query_imdb_to_tmdb_map(tmdb_id, imdb=False, media_type=media_type)
             if cache_id and not expired:
-                return cache_id
+                if util.valid_imdb_id(cache_id):
+                    return cache_id
+                logger.warning(f"Convert Warning: Ignoring invalid cached IMDb ID '{cache_id}' for TMDb ID '{tmdb_id}'")
+                expired = True
         try:
             imdb_id = self.tmdb.convert_from(tmdb_id, "imdb_id", is_movie)
-            if imdb_id:
+            if util.valid_imdb_id(imdb_id):
                 if self.cache:
                     self.cache.update_imdb_to_tmdb_map(media_type, expired, imdb_id, tmdb_id)
                 return imdb_id
+            elif imdb_id:
+                logger.warning(f"Convert Warning: Ignoring invalid IMDb ID '{imdb_id}' returned for TMDb ID '{tmdb_id}'")
         except Failed:
             pass
         if fail:
@@ -169,6 +174,10 @@ class Convert:
             return None
 
     def imdb_to_tmdb(self, imdb_id, fail=False):
+        if not util.valid_imdb_id(imdb_id):
+            if fail:
+                raise MappingConvertError(f"Convert Warning: Invalid IMDb ID '{imdb_id}'")
+            return None, None
         expired = False
         if self.cache:
             cache_id, cache_type, expired = self.cache.query_imdb_to_tmdb_map(imdb_id, imdb=True, return_type=True)
@@ -230,10 +239,13 @@ class Convert:
         if self.cache:
             cache_id, expired = self.cache.query_imdb_to_tvdb_map(tvdb_id, imdb=False)
             if cache_id and not expired:
-                return cache_id
+                if util.valid_imdb_id(cache_id):
+                    return cache_id
+                logger.warning(f"Convert Warning: Ignoring invalid cached IMDb ID '{cache_id}' for TVDb ID '{tvdb_id}'")
+                expired = True
         try:
             imdb_id = self.tmdb_to_imdb(self.tvdb_to_tmdb(tvdb_id, fail=True), is_movie=False, fail=True)
-            if imdb_id:
+            if util.valid_imdb_id(imdb_id):
                 if self.cache:
                     self.cache.update_imdb_to_tvdb_map(expired, imdb_id, tvdb_id)
                 return imdb_id
@@ -245,6 +257,10 @@ class Convert:
             return None
 
     def imdb_to_tvdb(self, imdb_id, fail=False):
+        if not util.valid_imdb_id(imdb_id):
+            if fail:
+                raise MappingConvertError(f"Convert Warning: Invalid IMDb ID '{imdb_id}'")
+            return None
         expired = False
         if self.cache:
             cache_id, expired = self.cache.query_imdb_to_tvdb_map(imdb_id, imdb=True)
@@ -272,6 +288,20 @@ class Convert:
         expired = None
         if self.cache:
             cache_id, imdb_check, media_type, expired = self.cache.query_guid_map(guid)
+            valid_cache_ids = [value for value in (cache_id or []) if util.positive_int(value)]
+            valid_imdb_ids = [value for value in (imdb_check or []) if util.valid_imdb_id(value)]
+            if valid_cache_ids != (cache_id or []) or valid_imdb_ids != (imdb_check or []):
+                logger.warning(f"Convert Warning: Removed invalid cached provider IDs for {guid}")
+                self.cache.update_guid_map(
+                    guid,
+                    ",".join(str(value) for value in valid_cache_ids) or None,
+                    ",".join(valid_imdb_ids) or None,
+                    True,
+                    media_type,
+                )
+                cache_id = valid_cache_ids
+                imdb_check = valid_imdb_ids
+                expired = False
             if (cache_id or imdb_check) and not expired:
                 media_id_type = "movie" if "movie" in media_type else "show"
                 if item_type == "hama" and check_id.startswith("anidb"):
@@ -318,11 +348,15 @@ class Convert:
                         try:
                             url_parsed = urlparse(guid_tag.id)
                             if url_parsed.scheme == "tvdb" and library.is_show:
-                                tvdb_id.append(int(url_parsed.netloc))
-                            elif url_parsed.scheme == "imdb":
+                                parsed_tvdb = util.positive_int(url_parsed.netloc)
+                                if parsed_tvdb:
+                                    tvdb_id.append(parsed_tvdb)
+                            elif url_parsed.scheme == "imdb" and util.valid_imdb_id(url_parsed.netloc):
                                 imdb_id.append(url_parsed.netloc)
                             elif url_parsed.scheme == "tmdb":
-                                tmdb_id.append(int(url_parsed.netloc))
+                                parsed_tmdb = util.positive_int(url_parsed.netloc)
+                                if parsed_tmdb:
+                                    tmdb_id.append(parsed_tmdb)
                         except ValueError:
                             pass
                 except ConnectionError:
@@ -337,23 +371,26 @@ class Convert:
                 db_tvdb = provider_ids[1] if len(provider_ids) > 1 else None
                 db_tmdb = provider_ids[2] if len(provider_ids) > 2 else None
                 if db_tvdb is not None:
-                    try:
-                        int(db_tvdb)
-                    except (TypeError, ValueError):
+                    if util.positive_int(db_tvdb) is None:
                         db_tvdb = str(db_tvdb).split("/")[-1]
-                    try:
-                        tvdb_id.append(int(db_tvdb))
-                    except (TypeError, ValueError):
+                    parsed_tvdb = util.positive_int(db_tvdb)
+                    if parsed_tvdb:
+                        tvdb_id.append(parsed_tvdb)
+                    else:
                         logger.warning(f"Convert Warning: Invalid Emby TVDb ID '{db_tvdb}' for {getattr(item, 'title', item)}")
-                if db_imdb:
+                if util.valid_imdb_id(db_imdb):
                     imdb_id.append(db_imdb)
+                elif db_imdb:
+                    logger.warning(f"Convert Warning: Invalid Emby IMDb ID '{db_imdb}' for {getattr(item, 'title', item)}")
                 if db_tmdb:
-                    try:
-                        tmdb_id.append(int(db_tmdb))
-                    except (TypeError, ValueError):
+                    parsed_tmdb = util.positive_int(db_tmdb)
+                    if parsed_tmdb:
+                        tmdb_id.append(parsed_tmdb)
+                    else:
                         logger.warning(f"Convert Warning: Invalid Emby TMDb ID '{db_tmdb}' for {getattr(item, 'title', item)}")
             elif item_type == "imdb":
-                imdb_id.append(check_id)
+                if util.valid_imdb_id(check_id):
+                    imdb_id.append(check_id)
             elif item_type == "thetvdb":
                 tvdb_id.append(int(check_id))
             elif item_type == "themoviedb":
@@ -367,20 +404,29 @@ class Convert:
                     else:
                         tvdb_id.append(int(check_id))
                 except ValueError:
-                    imdb_id.append(check_id)
+                    if util.valid_imdb_id(check_id):
+                        imdb_id.append(check_id)
             elif item_type == "hama":
                 if check_id.startswith("tvdb"):
-                    tvdb_id.append(int(self._hama_suffix(check_id)))
+                    hama_tvdb = util.positive_int(self._hama_suffix(check_id))
+                    if not hama_tvdb:
+                        raise MappingConvertError(f"Convert Error: Invalid TVDb ID in Hama ID '{check_id}'")
+                    tvdb_id.append(hama_tvdb)
                 elif check_id.startswith("anidb"):
                     anidb_str = self._hama_suffix(check_id)
-                    anidb_id = int(anidb_str[1:] if anidb_str[0] == "a" else anidb_str)
+                    anidb_id = util.positive_int(anidb_str[1:] if anidb_str[0] == "a" else anidb_str)
+                    if not anidb_id:
+                        raise MappingConvertError(f"Convert Error: Invalid AniDB ID in Hama ID '{check_id}'")
                     library.anidb_map[anidb_id] = item.ratingKey
                 else:
                     raise MappingConvertError(f"Mapping Error: Hama Agent ID '{check_id}' not supported")
             elif item_type == "myanimelist":
-                library.mal_map[int(check_id)] = item.ratingKey
-                if int(check_id) in self._mal_to_anidb:
-                    anidb_id = self._mal_to_anidb[int(check_id)]
+                mal_id = util.positive_int(check_id)
+                if not mal_id:
+                    raise MappingConvertError(f"Convert Error: Invalid MyAnimeList ID '{check_id}'")
+                library.mal_map[mal_id] = item.ratingKey
+                if mal_id in self._mal_to_anidb:
+                    anidb_id = self._mal_to_anidb[mal_id]
                 else:
                     raise MappingConvertError(f"Convert Error: No AniDB ID found for MyAnimeList ID '{check_id}'")
             elif item_type == "local":
@@ -429,6 +475,10 @@ class Convert:
                     imdb = self.tvdb_to_imdb(tvdb)
                     if imdb:
                         imdb_id.append(imdb)
+
+            tmdb_id = list(dict.fromkeys(value for value in (util.positive_int(item_id) for item_id in tmdb_id) if value))
+            tvdb_id = list(dict.fromkeys(value for value in (util.positive_int(item_id) for item_id in tvdb_id) if value))
+            imdb_id = list(dict.fromkeys(item_id for item_id in imdb_id if util.valid_imdb_id(item_id)))
 
             def update_cache(cache_ids, id_type, imdb_in, guid_type):
                 if self.cache:

@@ -175,14 +175,18 @@ class Requests:
                 logger.exorcise()
 
     def get_cloudscrape_html(self, url, headers=None, params=None, language=None):
-        cloud_headers = get_header(headers, True, language)
-        cloud_headers.pop("User-Agent")
-        response = self.cloudscraper.get(url, params=params, headers=cloud_headers, timeout=DEFAULT_TIMEOUT)
+        response = self.get_cloudscrape_response(url, headers=headers, params=params, language=language)
         if response.status_code == 403:
             time.sleep(3)
             self.cloudscraper = cloudscraper.create_scraper()
-            response = self.cloudscraper.get(url, params=params, headers=cloud_headers, timeout=DEFAULT_TIMEOUT)
+            response = self.get_cloudscrape_response(url, headers=headers, params=params, language=language)
         return html.fromstring(response.content)
+
+    def get_cloudscrape_response(self, url, headers=None, params=None, language=None):
+        cloud_headers = get_header(headers, True, language)
+        cloud_headers.pop("User-Agent", None)
+        cloud_headers.setdefault("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        return self.cloudscraper.get(url, params=params, headers=cloud_headers, timeout=DEFAULT_TIMEOUT)
 
     def get_html(self, url, headers=None, params=None, header=None, language=None):
         return html.fromstring(self.get(url, headers=headers, params=params, header=header, language=language).content)
@@ -197,6 +201,9 @@ class Requests:
 
     @retry(stop=stop_after_attempt(6), wait=wait_exponential(multiplier=1, min=1, max=10))
     def get(self, url, json=None, headers=None, params=None, header=None, language=None):
+        return self.session.get(url, json=json, headers=get_header(headers, header, language), params=params, timeout=DEFAULT_TIMEOUT)
+
+    def get_once(self, url, json=None, headers=None, params=None, header=None, language=None):
         return self.session.get(url, json=json, headers=get_header(headers, header, language), params=params, timeout=DEFAULT_TIMEOUT)
 
     def get_image_encoded(self, url):
@@ -215,6 +222,9 @@ class Requests:
 
     @retry(stop=stop_after_attempt(6), wait=wait_exponential(multiplier=1, min=1, max=10))
     def post(self, url, data=None, json=None, headers=None, header=None, language=None):
+        return self.session.post(url, data=data, json=json, headers=get_header(headers, header, language), timeout=DEFAULT_TIMEOUT)
+
+    def post_once(self, url, data=None, json=None, headers=None, header=None, language=None):
         return self.session.post(url, data=data, json=json, headers=get_header(headers, header, language), timeout=DEFAULT_TIMEOUT)
 
     def has_new_version(self):

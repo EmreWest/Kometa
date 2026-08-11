@@ -48,6 +48,28 @@ class TestInit:
         assert o.overlays == []
 
 
+class TestBlankRatingValues:
+    @pytest.mark.parametrize("variable_name", ["user_rating", "critic_rating", "audience_rating"])
+    @pytest.mark.parametrize("value", [None, ""])
+    def test_ignore_blank_results_skips_missing_rating(self, variable_name, value):
+        from modules.overlays import BlankOverlayValue, _required_rating_value
+
+        with pytest.raises(BlankOverlayValue, match="ignore_blank_results=True"):
+            _required_rating_value(value, variable_name, "Episode", True)
+
+    @pytest.mark.parametrize("variable_name", ["user_rating", "critic_rating", "audience_rating"])
+    def test_blank_rating_is_error_when_not_ignored(self, variable_name):
+        from modules.overlays import _required_rating_value
+
+        with pytest.raises(Failed, match=variable_name):
+            _required_rating_value(None, variable_name, "Movie", False)
+
+    def test_zero_rating_is_not_blank(self):
+        from modules.overlays import _required_rating_value
+
+        assert _required_rating_value(0.0, "user_rating", "Movie", True) == 0.0
+
+
 class TestGetOverlayItems:
     def test_searches_library_with_label(self):
         o = make_overlays()

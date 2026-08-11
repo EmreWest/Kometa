@@ -592,3 +592,20 @@ class TestDispatchTables:
         assert "tmdb" in text, "all_builders missing tmdb-related entries"
         assert "trakt" in text, "all_builders missing trakt-related entries"
         assert "imdb" in text, "all_builders missing imdb-related entries"
+
+
+def test_safe_tmdb_lookup_treats_deleted_external_id_as_warning(monkeypatch):
+    from modules import tmdb
+    from modules.builder import CollectionBuilder
+    from tests.conftest import FakeLogger
+
+    fake_logger = FakeLogger()
+    monkeypatch.setattr("modules.builder.logger", fake_logger)
+    builder = CollectionBuilder.__new__(CollectionBuilder)
+
+    def deleted(_):
+        raise tmdb.NotFound("gone")
+
+    assert builder._safe_tmdb_lookup(deleted, 1016041, "movie") is None
+    assert any("no longer exists" in message for message in fake_logger.warning_messages)
+    assert fake_logger.error_messages == []

@@ -148,6 +148,7 @@ class Overlay:
         self.back_width = None
         self.back_height = None
         self.special_text = None
+        self.ignore_blank_results = False
 
         logger.debug("")
         logger.debug("Validating Method: overlay")

@@ -144,3 +144,14 @@ def test_emby_search_filters_non_media_items(monkeypatch):
     assert result == []
     assert fake_logger.error_messages == []
     assert len(fake_logger.debug_messages) == 2
+
+
+def test_emby_provider_ids_reject_numeric_imdb_id(monkeypatch):
+    fake_logger = FakeLogger()
+    monkeypatch.setattr("modules.emby_server.logger", fake_logger)
+    server = EmbyServer.__new__(EmbyServer)
+    server.get_item = lambda _: {"Type": "Movie", "ProviderIds": {"Tmdb": "295613", "Imdb": "295613"}}
+    item = SimpleNamespace(ratingKey="6120269", title="Pokémon Chronicles - The Legend of Thunder")
+
+    assert server.get_provider_ids(item) == [None, None, 295613]
+    assert any("invalid IMDb ID '295613'" in message for message in fake_logger.warning_messages)

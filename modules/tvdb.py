@@ -1,11 +1,13 @@
 import re
+import random
 import time
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from urllib.parse import urlsplit, urlunsplit
 
 from lxml import html
 from lxml.etree import ParserError
-from requests.exceptions import MissingSchema
-from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_fixed
+from requests.exceptions import MissingSchema, RequestException
 
 from modules import util
 from modules.util import Failed
@@ -23,11 +25,6 @@ class Unavailable(Failed):
 
 class TVDbServerError(Exception):
     """Raised for 5xx responses from TVDb; not a Failed subclass so tenacity's retry_if_not_exception_type(Failed) will retry it."""
-
-
-def _tvdb_retry_exhausted(retry_state):
-    """Convert an exhausted TVDb retry loop (5xx, or repeated unparsable 202/empty responses) into Unavailable."""
-    raise Unavailable(f"TVDb Error: No usable response from TVDb after {retry_state.attempt_number} attempt(s): {retry_state.outcome.exception()}") from retry_state.outcome.exception()
 
 
 builders = ["tvdb_list", "tvdb_list_details", "tvdb_movie", "tvdb_movie_details", "tvdb_show", "tvdb_show_details"]
@@ -249,8 +246,8 @@ class TVDbObj:
             except Unavailable:
                 # Already has its own accurate message - don't relabel it as "No Series/Movie found"
                 raise
-            except (Failed, TVDbServerError):
-                raise Failed(f"TVDb Error: No {'Movie' if is_movie else 'Series'} found for TVDb ID: {tvdb_id} at {item_url}")
+            except Failed:
+                raise
 
         def parse_page(xpath, is_list=False):
             parse_results = data.xpath(xpath)
@@ -304,6 +301,8 @@ class TVDbObj:
 
 
 class TVDb:
+    request_attempts = 4
+
     def __init__(self, requests, cache, tvdb_language, expiration):
         self.requests = requests
         self.cache = cache
@@ -314,15 +313,96 @@ class TVDb:
         tvdb_id, _, _ = self.get_id_from_url(tvdb_url, is_movie=is_movie)
         return TVDbObj(self, tvdb_id, is_movie=is_movie)
 
-    @retry(stop=stop_after_attempt(6), wait=wait_fixed(10), retry=retry_if_not_exception_type(Failed), retry_error_callback=_tvdb_retry_exhausted)
+    @staticmethod
+    def _safe_url(url):
+        parts = urlsplit(str(url))
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+    @staticmethod
+    def _retry_after(response, default):
+        value = response.headers.get("Retry-After") if getattr(response, "headers", None) else None
+        if value:
+            try:
+                return max(float(value), 0)
+            except (TypeError, ValueError):
+                try:
+                    retry_at = parsedate_to_datetime(value)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=timezone.utc)
+                    return max((retry_at - datetime.now(timezone.utc)).total_seconds(), 0)
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        return default
+
+    @staticmethod
+    def _response_details(response, requested_url, attempt):
+        headers = getattr(response, "headers", {}) or {}
+        content = getattr(response, "content", b"") or b""
+        final_url = TVDb._safe_url(getattr(response, "url", requested_url) or requested_url)
+        requested_safe = TVDb._safe_url(requested_url)
+        redirect = final_url if final_url != requested_safe or getattr(response, "history", None) else "none"
+        return (
+            f"attempt={attempt}/{TVDb.request_attempts} url={requested_safe} "
+            f"status={getattr(response, 'status_code', 'unknown')} "
+            f"content_type={headers.get('Content-Type', 'missing')} "
+            f"content_length={headers.get('Content-Length', 'missing')} body_length={len(content)} "
+            f"retry_after={headers.get('Retry-After', 'missing')} redirect={redirect}"
+        )
+
     def get_request(self, tvdb_url):
-        response = self.requests.get(tvdb_url, language=self.language)
-        if response.status_code >= 400:
-            # 4xx = definitive "gone" (NotFound); 5xx = transient (TVDbServerError, retried by tenacity)
-            if 400 <= response.status_code < 500:
-                raise NotFound(f"({response.status_code}) {response.reason}")
-            raise TVDbServerError(f"({response.status_code}) {response.reason}")
-        return html.fromstring(response.content)
+        safe_url = self._safe_url(tvdb_url)
+        last_reason = "unknown response"
+        request_method = getattr(self.requests, "get_once", None) or self.requests.get
+        for attempt in range(1, self.request_attempts + 1):
+            response = None
+            try:
+                response = request_method(tvdb_url, language=self.language)
+                logger.debug(f"TVDb Request: {self._response_details(response, tvdb_url, attempt)}")
+            except RequestException as e:
+                last_reason = f"network {type(e).__name__}: {e}"
+                logger.debug(f"TVDb Request: attempt={attempt}/{self.request_attempts} url={safe_url} exception={type(e).__name__}: {e}")
+                if attempt == self.request_attempts:
+                    raise Unavailable(f"TVDb Error: Network failure for {safe_url} after {attempt} attempt(s): {type(e).__name__}: {e}") from e
+            except Exception as e:
+                raise Failed(f"TVDb Error: Request failed for {safe_url}: {type(e).__name__}: {e}") from e
+
+            if response is not None:
+                status = response.status_code
+                reason = getattr(response, "reason", "") or "HTTP error"
+                if status == 404:
+                    raise NotFound(f"TVDb Error: HTTP 404; resource does not exist at {safe_url}")
+                if 400 <= status < 500 and status not in [408, 429]:
+                    label = "Authentication failed" if status == 401 else "Access denied" if status == 403 else reason
+                    raise Failed(f"TVDb Error: HTTP {status} {label} for {safe_url}; not retrying")
+                if status == 429:
+                    last_reason = "HTTP 429 Rate Limit"
+                elif status == 408:
+                    last_reason = "HTTP 408 Request Timeout"
+                elif status >= 500:
+                    last_reason = f"HTTP {status} Server Error: {reason}"
+                elif status != 200:
+                    raise Failed(f"TVDb Error: Unexpected HTTP {status} for {safe_url}: {reason}")
+                else:
+                    content = getattr(response, "content", b"") or b""
+                    content_type = (getattr(response, "headers", {}) or {}).get("Content-Type", "").split(";", 1)[0].lower()
+                    if not content.strip():
+                        last_reason = "HTTP 200 with empty body"
+                    elif content_type and content_type not in ["text/html", "application/xhtml+xml"]:
+                        last_reason = f"HTTP 200 with unexpected Content-Type {content_type}"
+                    else:
+                        try:
+                            return html.fromstring(content)
+                        except (ParserError, TypeError, ValueError) as e:
+                            last_reason = f"HTTP 200 parsing failure {type(e).__name__}: {e}"
+
+            if attempt < self.request_attempts:
+                base_delay = min(2 ** (attempt - 1), 8)
+                delay = self._retry_after(response, base_delay) if response is not None and response.status_code == 429 else base_delay
+                delay += random.uniform(0, 0.5)
+                logger.debug(f"TVDb Retry: attempt={attempt}/{self.request_attempts} url={safe_url} reason={last_reason} wait={delay:.2f}s")
+                time.sleep(delay)
+
+        raise Unavailable(f"TVDb Error: No usable response from TVDb for {safe_url} after {self.request_attempts} attempt(s): {last_reason}")
 
     def get_id_from_url(self, tvdb_url, is_movie=False, ignore_cache=False):
         try:
@@ -347,8 +427,10 @@ class TVDb:
         logger.trace(f"URL: {tvdb_url}")
         try:
             response = self.get_request(tvdb_url)
-        except (ParserError, Failed, TVDbServerError):
-            raise Failed(f"TVDb Error: Failed not parse {tvdb_url}")
+        except (NotFound, Unavailable, Failed):
+            raise
+        except ParserError as e:
+            raise Failed(f"TVDb Error: Failed to parse {self._safe_url(tvdb_url)}: {type(e).__name__}: {e}") from e
         results = response.xpath(f"//*[text()='TheTVDB.com {media_type} ID']/parent::node()/span/text()")
         if len(results) > 0:
             tvdb_id = int(results[0])

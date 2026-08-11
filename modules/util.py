@@ -569,6 +569,15 @@ def check_num(num, is_int=True):
         return None
 
 
+def valid_imdb_id(value):
+    return isinstance(value, str) and re.fullmatch(r"tt[0-9]+", value.strip()) is not None
+
+
+def positive_int(value):
+    parsed = check_num(value)
+    return parsed if parsed is not None and parsed > 0 else None
+
+
 def check_collection_mode(collection_mode):
     if collection_mode and str(collection_mode).lower() in collection_mode_options:
         return collection_mode_options[str(collection_mode).lower()]

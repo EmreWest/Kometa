@@ -2133,6 +2133,11 @@ class Plex(Library):
             tvdb_id = self.get_tvdb_from_map(item)
         if not imdb_id:
             imdb_id = self.get_imdb_from_map(item)
+        tmdb_id = util.positive_int(tmdb_id)
+        tvdb_id = util.positive_int(tvdb_id)
+        if imdb_id and not util.valid_imdb_id(imdb_id):
+            logger.warning(f"Plex Provider IDs: invalid IMDb ID '{imdb_id}' for {item.title}; ignoring")
+            imdb_id = None
         return tmdb_id, tvdb_id, imdb_id
 
     def get_ratings(self, item):

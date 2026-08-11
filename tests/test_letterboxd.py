@@ -74,6 +74,8 @@ class FakeMovie:
     def __init__(self, slug):
         data = self.payloads[slug]
         self.tmdb_id = data.get("tmdb_id")
+        self.tmdb_link = data.get("tmdb_link")
+        self.title = data.get("title")
         self.rating = data.get("rating")
 
 
@@ -686,6 +688,27 @@ def test_user_films_fallback_extracts_watched_entries(monkeypatch, patch_logger)
 
     assert items == [("333", "/film/film-fallback/", 2021, None, 8, None)]
     assert any("using Kometa fallback parsing" in message for message in patch_logger.warning_messages)
+
+
+def test_tmdb_movie_link_returns_movie_id(adapter):
+    FakeMovie.payloads = {"movie-entry": {"tmdb_link": "https://www.themoviedb.org/movie/12345"}}
+    assert adapter._tmdb("/film/movie-entry/", "en") == 12345
+
+
+def test_tmdb_tv_link_is_warning_and_not_generic_error(adapter, patch_logger):
+    from modules.letterboxd import NonMovieEntry
+
+    FakeMovie.payloads = {"tv-entry": {"title": "Dekalog", "tmdb_link": "https://www.themoviedb.org/tv/12345"}}
+    with pytest.raises(NonMovieEntry):
+        adapter._tmdb("/film/tv-entry/", "en")
+    assert any("Skipping non-movie entry 'Dekalog'" in message for message in patch_logger.warning_messages)
+    assert patch_logger.error_messages == []
+
+
+def test_tmdb_missing_or_invalid_link_keeps_existing_error(adapter):
+    FakeMovie.payloads = {"missing-entry": {"tmdb_link": "https://www.themoviedb.org/person/12345"}}
+    with pytest.raises(Failed, match="TMDb Movie ID not found"):
+        adapter._tmdb("/film/missing-entry/", "en")
 
 
 class TestResolveBoxdUrl:

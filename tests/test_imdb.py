@@ -1,5 +1,6 @@
-"""Tests for modules/imdb.py -- focused on parental_guide edge cases."""
+"""Tests for modules/imdb.py -- focused on provider response edge cases."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,11 +9,65 @@ from modules.imdb import IMDb
 from modules.util import Failed
 
 
+def html_response(status=200, content=b"<html></html>", headers=None, reason="Mocked"):
+    return SimpleNamespace(status_code=status, content=content, headers=headers or {}, reason=reason)
+
+
 def make_imdb(graph_response):
     """Return a minimal IMDb instance with _graph_request mocked to return graph_response."""
     imdb = IMDb(requests=MagicMock(), cache=None, default_dir="/tmp")
     imdb._graph_request = MagicMock(return_value=graph_response)
     return imdb
+
+
+class TestIMDbHttpHandling:
+    def _imdb(self, responses):
+        requests = MagicMock()
+        requests.get_cloudscrape_response.side_effect = responses
+        return IMDb(requests=requests, cache=None, default_dir="/tmp")
+
+    def test_normal_next_data_response(self):
+        payload = b'<html><script id="__NEXT_DATA__">{"props":{"pageProps":{"ok":true}}}</script></html>'
+        imdb = self._imdb([html_response(content=payload)])
+        assert imdb._request("https://www.imdb.com/chart/top", page_props=True) == {"ok": True}
+
+    def test_http_403_is_single_actionable_failure(self):
+        imdb = self._imdb([html_response(status=403, content=b"Forbidden")])
+        with pytest.raises(Failed, match="HTTP 403 Access Denied") as exc:
+            imdb._request("https://www.imdb.com/chart/top", context="Top 250 Movies")
+        assert "list index" not in str(exc.value)
+        assert imdb.requests.get_cloudscrape_response.call_count == 1
+
+    def test_http_429_respects_retry_after(self, monkeypatch):
+        sleeps = []
+        monkeypatch.setattr("modules.imdb.time.sleep", sleeps.append)
+        imdb = self._imdb(
+            [
+                html_response(status=429, headers={"Retry-After": "7"}),
+                html_response(content=b"<html><body>ok</body></html>"),
+            ]
+        )
+        imdb._request("https://www.imdb.com/chart/top")
+        assert sleeps == [7.0]
+
+    def test_http_500_retries_then_raises(self, monkeypatch):
+        monkeypatch.setattr("modules.imdb.time.sleep", lambda _: None)
+        imdb = self._imdb([html_response(status=500)] * 3)
+        with pytest.raises(Failed, match="HTTP 500 Server Error"):
+            imdb._request("https://www.imdb.com/chart/top")
+        assert imdb.requests.get_cloudscrape_response.call_count == 3
+
+    def test_http_200_without_next_data_is_not_index_error(self):
+        imdb = self._imdb([html_response(content=b"<html><body>challenge</body></html>")])
+        with pytest.raises(Failed, match="Expected __NEXT_DATA__ payload was not found") as exc:
+            imdb._request("https://www.imdb.com/chart/top", page_props=True)
+        assert not isinstance(exc.value, IndexError)
+
+    def test_empty_chart_result_is_reported(self):
+        imdb = self._imdb([])
+        imdb._chart_graphql = MagicMock(return_value=[])
+        with pytest.raises(Failed, match="empty result list"):
+            imdb._ids_from_chart("top_movies", "en")
 
 
 # ---------------------------------------------------------------------------

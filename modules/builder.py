@@ -4752,6 +4752,8 @@ class CollectionBuilder:
     def _safe_tmdb_lookup(self, getter, tmdb_id, item_type):
         try:
             return getter(tmdb_id)
+        except tmdb.NotFound:
+            logger.warning(f"TMDb Warning: {item_type.capitalize()} ID {tmdb_id} no longer exists; skipping external list entry")
         except Failed as e:
             logger.error(e)
         except TMDbException as e:

@@ -5,7 +5,14 @@ import math
 import os
 import re
 import shutil
+import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Literal, overload
+
+from lxml import html
+from lxml.etree import ParserError
+from requests.exceptions import RequestException
 
 from modules import util
 from modules.util import Failed
@@ -491,20 +498,105 @@ class IMDb:
         self._list_hash = None
         self._watchlist_hash = None
 
-    def _request(self, url, language=None, xpath=None, params=None, page_props=False):
+    @staticmethod
+    def _retry_delay(response, attempt):
+        retry_after = response.headers.get("Retry-After") if getattr(response, "headers", None) else None
+        if retry_after:
+            try:
+                return max(float(retry_after), 0)
+            except (TypeError, ValueError):
+                try:
+                    retry_at = parsedate_to_datetime(retry_after)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=timezone.utc)
+                    return max((retry_at - datetime.now(timezone.utc)).total_seconds(), 0)
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        return min(2 ** (attempt - 1), 10)
+
+    def _request(self, url, language=None, xpath=None, params=None, page_props=False, context=None):
         logger.trace(f"URL: {url}")
         if params:
             logger.trace(f"Params: {params}")
+        resource = context or url
+        response = None
+        for attempt in range(1, 4):
+            try:
+                response = self.requests.get_cloudscrape_response(url, params=params, language=language)
+            except RequestException as e:
+                if attempt < 3:
+                    time.sleep(min(2 ** (attempt - 1), 10))
+                    continue
+                raise Failed(f"IMDb Error: Network failure while requesting {resource} after {attempt} attempts: {type(e).__name__}: {e}") from e
+            except Exception as e:
+                raise Failed(f"IMDb Error: Request failed for {resource}: {type(e).__name__}: {e}") from e
+
+            status = response.status_code
+            if status == 200:
+                break
+            reason = getattr(response, "reason", "") or "HTTP error"
+            if status == 403:
+                raise Failed(f"IMDb Error: HTTP 403 Access Denied while requesting {resource}; builder skipped")
+            if status == 429:
+                if attempt < 3:
+                    delay = self._retry_delay(response, attempt)
+                    logger.debug(f"IMDb HTTP 429 for {resource}; retry {attempt}/3 after {delay:.1f}s")
+                    time.sleep(delay)
+                    continue
+                raise Failed(f"IMDb Error: HTTP 429 Rate Limit while requesting {resource} after {attempt} attempts; builder skipped")
+            if status >= 500:
+                if attempt < 3:
+                    delay = min(2 ** (attempt - 1), 10)
+                    logger.debug(f"IMDb HTTP {status} for {resource}; retry {attempt}/3 after {delay}s")
+                    time.sleep(delay)
+                    continue
+                raise Failed(f"IMDb Error: HTTP {status} Server Error while requesting {resource} after {attempt} attempts: {reason}")
+            raise Failed(f"IMDb Error: HTTP {status} while requesting {resource}: {reason}")
+
+        if response is None:
+            raise Failed(f"IMDb Error: No response while requesting {resource}")
         try:
-            response = self.requests.get_cloudscrape_html(url, params=params, language=language)
-        except Exception as e:
-            raise Failed(e)
+            document = html.fromstring(response.content)
+        except (ParserError, TypeError, ValueError) as e:
+            raise Failed(f"IMDb Error: HTTP 200 returned invalid HTML while requesting {resource}: {type(e).__name__}: {e}") from e
         if page_props:
-            return json.loads(response.xpath("//script[@id='__NEXT_DATA__']/text()")[0])["props"]["pageProps"]
-        return response.xpath(xpath) if xpath else response
+            results = document.xpath("//script[@id='__NEXT_DATA__']/text()")
+            if not results:
+                raise Failed(f"IMDb Error: Expected __NEXT_DATA__ payload was not found while requesting {resource}")
+            try:
+                return json.loads(results[0])["props"]["pageProps"]
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                raise Failed(f"IMDb Error: Invalid __NEXT_DATA__ payload while requesting {resource}: {type(e).__name__}") from e
+        return document.xpath(xpath) if xpath else document
 
     def _graph_request(self, json_data):
-        return self.requests.post_json(graphql_url, headers={"content-type": "application/json"}, json=json_data)
+        request_method = getattr(self.requests, "post_once", None) or self.requests.post
+        for attempt in range(1, 4):
+            try:
+                response = request_method(graphql_url, headers={"content-type": "application/json"}, json=json_data)
+            except RequestException as e:
+                if attempt < 3:
+                    time.sleep(min(2 ** (attempt - 1), 10))
+                    continue
+                raise Failed(f"IMDb Error: Network failure while requesting IMDb GraphQL after {attempt} attempts: {type(e).__name__}: {e}") from e
+            status = response.status_code
+            if status == 200:
+                try:
+                    return response.json()
+                except ValueError as e:
+                    raise Failed("IMDb Error: HTTP 200 returned invalid JSON from IMDb GraphQL") from e
+            if status == 403:
+                raise Failed("IMDb Error: HTTP 403 Access Denied while requesting IMDb GraphQL")
+            if status == 429 and attempt < 3:
+                time.sleep(self._retry_delay(response, attempt))
+                continue
+            if status >= 500 and attempt < 3:
+                time.sleep(min(2 ** (attempt - 1), 10))
+                continue
+            if status == 429:
+                raise Failed(f"IMDb Error: HTTP 429 Rate Limit while requesting IMDb GraphQL after {attempt} attempts")
+            raise Failed(f"IMDb Error: HTTP {status} while requesting IMDb GraphQL")
+        raise Failed("IMDb Error: No response from IMDb GraphQL")
 
     @property
     def search_hash(self):
@@ -789,8 +881,13 @@ class IMDb:
         if not keywords:
             raise Failed(f"IMDb Error: No Item Found for IMDb ID: {imdb_id}")
         for k in keywords:
-            name = k.xpath("div[@class='sodatext']/a/text()")[0]
-            relevant = k.xpath("div[@class='did-you-know-actions']/div/a/text()")[0].strip()
+            names = k.xpath("div[@class='sodatext']/a/text()")
+            relevance = k.xpath("div[@class='did-you-know-actions']/div/a/text()")
+            if not names or not relevance:
+                logger.debug(f"IMDb Warning: Skipping malformed keyword row for IMDb ID {imdb_id}")
+                continue
+            name = names[0]
+            relevant = relevance[0].strip()
             if "of" in relevant:
                 result = re.search(r"(\d+) of (\d+).*", relevant)
                 if result is not None:
@@ -860,14 +957,26 @@ class IMDb:
         if chart in chart_graphql_map:
             try:
                 ids = self._chart_graphql(chart)
+            except Exception as e:
+                logger.debug(f"GraphQL chart query error for {chart}: {e}")
+            else:
                 if ids:
                     logger.debug(f"GraphQL chart query returned {len(ids)} IDs for {chart}")
                     return ids
-            except Exception as e:
-                logger.debug(f"GraphQL chart query error for {chart}: {e}")
+                raise Failed(f"IMDb Error: {charts[chart]} returned an empty result list")
         # Fallback: HTML scraping via original xpath method
-        script_data = self._request(f"{base_url}/{chart_urls[chart]}", language=language, xpath="//script[@id='__NEXT_DATA__']/text()")[0]
-        return [x.group(1) for x in re.finditer(r'"(tt\d+)"', script_data)]
+        script_results = self._request(
+            f"{base_url}/{chart_urls[chart]}",
+            language=language,
+            xpath="//script[@id='__NEXT_DATA__']/text()",
+            context=charts[chart],
+        )
+        if not script_results:
+            raise Failed(f"IMDb Error: Expected __NEXT_DATA__ payload was not found while requesting {charts[chart]}")
+        ids = [x.group(1) for x in re.finditer(r'"(tt\d+)"', script_results[0])]
+        if not ids:
+            raise Failed(f"IMDb Error: {charts[chart]} returned an empty result list")
+        return ids
 
     def get_imdb_ids(self, method, data, language):
         if method == "imdb_id":
